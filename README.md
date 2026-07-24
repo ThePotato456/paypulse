@@ -1,6 +1,6 @@
 # PayPulse payroll dashboard
 
-A static, self-hosted payroll dashboard that reads `data/paystubs.csv` in the browser. It uses a locally bundled copy of Chart.js 4.5.1 and does not send payroll data to an external service. The bundled CSV is a sanitized copy containing payroll measures only.
+A self-hosted payroll dashboard that reads `data/paystubs.csv` in the browser. It uses a locally bundled copy of Chart.js 4.5.1 and does not send payroll or planning data to an external service. The bundled CSV is a sanitized copy containing payroll measures only.
 
 ## Run locally
 
@@ -13,7 +13,7 @@ python server.py
 
 Then open `http://localhost:8000`.
 
-The PayPulse server hosts the static dashboard and provides the local PDF-ingestion endpoint. A basic static server can still display the dashboard, but it cannot append uploaded statements to the CSV.
+The PayPulse server hosts the dashboard, provides the local PDF-ingestion endpoint, and stores Tools data in `data/planner.json`. A basic static server can still display the dashboard and use a browser-storage fallback, but it cannot append statements or provide durable server-side planner storage.
 
 ## Ingest a paystub
 
@@ -58,11 +58,29 @@ The **Load CSV** button remains available for temporary browser analysis of anot
 - Estimated upcoming paycheck schedule and annualized net pace
 - Annual gross, net, and take-home-rate comparison
 - Live payroll insights and summary metrics
+- Dedicated Tools tab with a paycheck what-if calculator seeded from recent averages
+- Take-home allocation by percentages or exact dollar amounts
+- Persistent expense calculator with weekly, biweekly, monthly, annual, and one-time costs
+- Multiple persistent savings goals with progress, editing, and per-paycheck runway guidance
+- Payroll health audit for reconciliation, duplicates, required fields, and cadence gaps
 - Filterable, sortable, paginated pay table
 - Export of the filtered standard payroll fields
 - PDF paystub ingestion with reconciliation, duplicate protection, backups, and live refresh
 
 Payment IDs, employee IDs, company IDs, and source-document fields are never shown or included in exports.
+
+## Planner persistence
+
+Allocations, expenses, and savings goals are validated and written atomically to
+`data/planner.json` by the local PayPulse server. Browser local storage is retained only as an
+offline backup and first-run migration source. Planner records are never added to the payroll CSV
+or sent to an external service.
+
+Use a different planner file when starting the server if needed:
+
+```powershell
+python server.py --planner "C:\path\to\planner.json"
+```
 
 ## Projection methodology
 

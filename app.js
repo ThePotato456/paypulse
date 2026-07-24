@@ -1,6 +1,13 @@
 "use strict";
 
 const DATA_URL = "data/paystubs.csv";
+const PLANNER_STORAGE_KEY = "paypulse-planner-v1";
+const DEFAULT_ALLOCATIONS = {
+  needs: 50,
+  savings: 20,
+  debt: 15,
+  flexible: 15,
+};
 const NUMERIC_FIELDS = new Set([
   "year",
   "check_amount",
@@ -69,6 +76,17 @@ const state = {
   sortDirection: "desc",
   page: 1,
   pageSize: 20,
+  activeView: "overview",
+  calculatorDirty: false,
+  calculatorNet: 0,
+  plannerAvailable: false,
+  plannerSaveTimer: null,
+  plannerSaveChain: Promise.resolve(),
+  allocationMode: "percent",
+  allocations: { ...DEFAULT_ALLOCATIONS },
+  expenses: [],
+  goals: [],
+  goalEditingId: null,
   charts: {},
 };
 
@@ -167,6 +185,11 @@ function sum(rows, key) {
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
+}
+
+function inputNumber(id) {
+  const value = Number(el(id).value);
+  return Number.isFinite(value) ? value : 0;
 }
 
 function escapeHtml(value) {
@@ -331,6 +354,572 @@ function buildProjection(rows) {
     taxRate,
     deductionRate,
   };
+}
+
+function estimateCadenceDays(rows) {
+  const ordered = [...rows].sort((a, b) => a.pay_date.localeCompare(b.pay_date));
+  const samples = ordered
+    .slice(1)
+    .map((row, index) =>
+      Math.round((dateValue(row.pay_date) - dateValue(ordered[index].pay_date)) / 86400000),
+    )
+    .filter((days) => days > 0 && days <= 45);
+  return Math.round(median(samples)) || 14;
+}
+
+function plannerPayload() {
+  return {
+    allocations: {
+      mode: state.allocationMode,
+      values: { ...state.allocations },
+    },
+    expenses: state.expenses.map((expense) => ({ ...expense })),
+    goals: state.goals.map((goal) => ({ ...goal })),
+  };
+}
+
+function updatePlannerSyncStatus(message, status = "saved") {
+  const badge = el("plannerSyncStatus");
+  badge.lastChild.textContent = ` ${message}`;
+  badge.classList.toggle("is-offline", status === "offline");
+  badge.classList.toggle("is-saving", status === "saving");
+}
+
+function applyPlannerData(planner) {
+  if (!planner || typeof planner !== "object") return;
+  const allocationBlock = planner.allocations || {};
+  const values = allocationBlock.values || allocationBlock;
+  state.allocationMode = allocationBlock.mode === "amount" ? "amount" : "percent";
+  Object.keys(DEFAULT_ALLOCATIONS).forEach((key) => {
+    const value = Number(values[key]);
+    state.allocations[key] = Number.isFinite(value)
+      ? Math.max(0, value)
+      : DEFAULT_ALLOCATIONS[key];
+  });
+  state.expenses = Array.isArray(planner.expenses)
+    ? planner.expenses.map((expense) => ({
+        id: String(expense.id || ""),
+        name: String(expense.name || "").slice(0, 80),
+        category: String(expense.category || "Other").slice(0, 40),
+        amount: Math.max(0, Number(expense.amount) || 0),
+        frequency: String(expense.frequency || "monthly"),
+      }))
+    : [];
+  state.goals = Array.isArray(planner.goals)
+    ? planner.goals.map((goal) => ({
+        id: String(goal.id || ""),
+        name: String(goal.name || "").slice(0, 80),
+        target: Math.max(0, Number(goal.target) || 0),
+        saved: Math.max(0, Number(goal.saved) || 0),
+        date: String(goal.date || ""),
+      }))
+    : [];
+
+  el("allocationMode").value = state.allocationMode;
+  Object.entries(state.allocations).forEach(([key, value]) => {
+    el(`allocation${key[0].toUpperCase()}${key.slice(1)}`).value = value;
+  });
+  el("goalDate").min = toIsoDate(new Date());
+}
+
+function migrateLocalPlanner(stored) {
+  if (!stored || typeof stored !== "object") return null;
+  const migrated = {
+    allocations: stored.allocations || { ...DEFAULT_ALLOCATIONS },
+    expenses: Array.isArray(stored.expenses) ? stored.expenses : [],
+    goals: Array.isArray(stored.goals) ? stored.goals : [],
+  };
+  if (
+    stored.goal &&
+    stored.goal.name &&
+    Number(stored.goal.target) > 0 &&
+    !migrated.goals.length
+  ) {
+    migrated.goals.push({
+      id: `migrated-${Date.now()}`,
+      name: String(stored.goal.name),
+      target: Number(stored.goal.target),
+      saved: Number(stored.goal.saved) || 0,
+      date: String(stored.goal.date || ""),
+    });
+  }
+  return migrated;
+}
+
+async function persistPlanner(immediate = false) {
+  const payload = plannerPayload();
+  try {
+    localStorage.setItem(PLANNER_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // Server persistence remains available when browser storage is disabled.
+  }
+
+  if (!state.plannerAvailable) {
+    updatePlannerSyncStatus("Browser backup only — run the PayPulse server to sync", "offline");
+    return false;
+  }
+
+  const save = async () => {
+    updatePlannerSyncStatus("Saving to PayPulse server…", "saving");
+    try {
+      const response = await fetch("/api/planner", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || "Planner data could not be saved.");
+      applyPlannerData(result.planner);
+      updatePlannerSyncStatus("Saved on this PayPulse server");
+      return true;
+    } catch (error) {
+      updatePlannerSyncStatus("Server save failed — browser backup retained", "offline");
+      showToast(error.message);
+      return false;
+    }
+  };
+
+  const enqueueSave = () => {
+    state.plannerSaveChain = state.plannerSaveChain.then(save, save);
+    return state.plannerSaveChain;
+  };
+  window.clearTimeout(state.plannerSaveTimer);
+  if (immediate) return enqueueSave();
+  state.plannerSaveTimer = window.setTimeout(enqueueSave, 400);
+  return true;
+}
+
+async function loadPlannerState() {
+  let localPlanner = null;
+  try {
+    localPlanner = migrateLocalPlanner(
+      JSON.parse(localStorage.getItem(PLANNER_STORAGE_KEY) || "null"),
+    );
+  } catch {
+    localPlanner = null;
+  }
+  if (localPlanner) applyPlannerData(localPlanner);
+  else applyPlannerData({ allocations: { mode: "percent", values: DEFAULT_ALLOCATIONS } });
+
+  try {
+    const response = await fetch("/api/planner", { cache: "no-store" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message || "Planner storage is unavailable.");
+    state.plannerAvailable = true;
+    if (!result.persisted && localPlanner) {
+      await persistPlanner(true);
+    } else {
+      applyPlannerData(result.planner);
+      try {
+        localStorage.setItem(PLANNER_STORAGE_KEY, JSON.stringify(result.planner));
+      } catch {
+        // The server remains the source of truth.
+      }
+      updatePlannerSyncStatus("Saved on this PayPulse server");
+    }
+  } catch {
+    state.plannerAvailable = false;
+    updatePlannerSyncStatus("Browser backup only — run the PayPulse server to sync", "offline");
+  }
+}
+
+function resetCalculatorDefaults(rows) {
+  if (!rows.length) return;
+  const ordered = [...rows].sort((a, b) => a.pay_date.localeCompare(b.pay_date));
+  const recent = ordered.slice(-Math.min(6, ordered.length));
+  const positiveRates = recent.map((row) => row.regular_rate).filter((value) => value > 0);
+  const gross = sum(recent, "gross_pay");
+  const average = (key) => sum(recent, key) / Math.max(recent.length, 1);
+
+  el("calcRate").value = (positiveRates.length
+    ? positiveRates.reduce((total, value) => total + value, 0) / positiveRates.length
+    : gross / Math.max(sum(recent, "hours_units"), 1)
+  ).toFixed(2);
+  el("calcHours").value = average("regular_hours").toFixed(2);
+  el("calcOvertime").value = average("overtime_hours").toFixed(2);
+  el("calcBonus").value = average("bonus_pay").toFixed(2);
+  el("calcTaxRate").value = (gross ? (sum(recent, "total_taxes") / gross) * 100 : 0).toFixed(1);
+  el("calcDeductionRate").value = (
+    gross ? (sum(recent, "total_deductions") / gross) * 100 : 0
+  ).toFixed(1);
+  state.calculatorDirty = false;
+  renderCalculator();
+}
+
+function renderCalculator() {
+  const rate = Math.max(0, inputNumber("calcRate"));
+  const hours = Math.max(0, inputNumber("calcHours"));
+  const overtime = Math.max(0, inputNumber("calcOvertime"));
+  const bonus = Math.max(0, inputNumber("calcBonus"));
+  const taxRate = clamp(inputNumber("calcTaxRate"), 0, 100) / 100;
+  const deductionRate = clamp(inputNumber("calcDeductionRate"), 0, 100) / 100;
+  const gross = rate * hours + rate * 1.5 * overtime + bonus;
+  const taxes = gross * taxRate;
+  const deductions = gross * deductionRate;
+  const net = Math.max(0, gross - taxes - deductions);
+
+  state.calculatorNet = net;
+  el("calcGross").textContent = currency.format(gross);
+  el("calcTaxes").textContent = currency.format(taxes);
+  el("calcDeductions").textContent = currency.format(deductions);
+  el("calcNet").textContent = currency.format(net);
+  el("calcTakeHome").textContent = gross ? percent.format(net / gross) : "—";
+  renderAllocation();
+  renderExpenses(state.filteredRows.length ? state.filteredRows : state.allRows);
+}
+
+function renderAllocation() {
+  const net = state.calculatorNet;
+  const amountMode = state.allocationMode === "amount";
+  let totalAmount = 0;
+  let totalPercent = 0;
+  el("allocationMode").value = state.allocationMode;
+
+  Object.keys(DEFAULT_ALLOCATIONS).forEach((key) => {
+    const inputId = `allocation${key[0].toUpperCase()}${key.slice(1)}`;
+    const input = el(inputId);
+    const rawValue = amountMode
+      ? Math.max(0, inputNumber(inputId))
+      : clamp(inputNumber(inputId), 0, 100);
+    if (amountMode) input.removeAttribute("max");
+    else input.max = "100";
+    el(`${inputId}Unit`).textContent = amountMode ? "$" : "%";
+    state.allocations[key] = rawValue;
+    const amount = amountMode ? rawValue : net * (rawValue / 100);
+    const share = net ? (amount / net) * 100 : 0;
+    totalAmount += amount;
+    totalPercent += share;
+    el(`${inputId}Amount`).textContent = amountMode
+      ? percent.format(share / 100)
+      : currency.format(amount);
+    el(`${inputId}Bar`).style.width = `${clamp(share, 0, 100)}%`;
+  });
+
+  el("allocationNet").textContent = currency.format(net);
+  const status = el("allocationStatus");
+  const amountDifference = net - totalAmount;
+  const percentDifference = 100 - totalPercent;
+  const balanced = Math.abs(amountDifference) < 0.01;
+  status.classList.toggle("is-warning", !balanced);
+  if (balanced) {
+    status.textContent = `${currency.format(totalAmount)} fully allocated`;
+  } else if (amountDifference > 0) {
+    status.textContent = amountMode
+      ? `${currency.format(amountDifference)} still unallocated`
+      : `${number.format(percentDifference)}% still unallocated`;
+  } else {
+    status.textContent = amountMode
+      ? `${currency.format(Math.abs(amountDifference))} over-allocated`
+      : `${number.format(Math.abs(percentDifference))}% over-allocated`;
+  }
+}
+
+function monthlyExpenseAmount(expense) {
+  const amount = Number(expense.amount) || 0;
+  return {
+    weekly: (amount * 52) / 12,
+    biweekly: (amount * 26) / 12,
+    monthly: amount,
+    annual: amount / 12,
+    "one-time": 0,
+  }[expense.frequency] ?? amount;
+}
+
+function frequencyLabel(frequency) {
+  return {
+    weekly: "Weekly",
+    biweekly: "Every 2 weeks",
+    monthly: "Monthly",
+    annual: "Annual",
+    "one-time": "One time",
+  }[frequency] || frequency;
+}
+
+function renderExpenses(rows) {
+  const monthlyTotal = state.expenses.reduce(
+    (total, expense) => total + monthlyExpenseAmount(expense),
+    0,
+  );
+  const cadenceDays = estimateCadenceDays(rows);
+  const paychecksPerYear = 365 / cadenceDays;
+  const expensePerPaycheck = paychecksPerYear ? (monthlyTotal * 12) / paychecksPerYear : 0;
+  const monthlyIncome = paychecksPerYear ? (state.calculatorNet * paychecksPerYear) / 12 : 0;
+  const remaining = state.calculatorNet - expensePerPaycheck;
+
+  el("expenseMonthlyTotal").textContent = currency.format(monthlyTotal);
+  el("expensePerPaycheck").textContent = currency.format(expensePerPaycheck);
+  el("expenseRemaining").textContent = currency.format(remaining);
+  el("expenseRemaining").classList.toggle("negative", remaining < 0);
+  el("expenseRatio").textContent = monthlyIncome
+    ? percent.format(monthlyTotal / monthlyIncome)
+    : "—";
+
+  el("expensesTableBody").innerHTML = state.expenses
+    .map((expense) => {
+      const monthly = monthlyExpenseAmount(expense);
+      return `
+        <tr>
+          <td><strong>${escapeHtml(expense.name)}</strong></td>
+          <td><span class="record-chip">${escapeHtml(expense.category)}</span></td>
+          <td>${escapeHtml(frequencyLabel(expense.frequency))}</td>
+          <td class="number">${currency.format(expense.amount)}</td>
+          <td class="number">${expense.frequency === "one-time" ? "—" : currency.format(monthly)}</td>
+          <td class="record-actions">
+            <button type="button" data-delete-expense="${escapeHtml(expense.id)}" aria-label="Delete ${escapeHtml(expense.name)}">Delete</button>
+          </td>
+        </tr>`;
+    })
+    .join("");
+  el("expensesEmpty").hidden = state.expenses.length > 0;
+  el("expensesTableBody").closest("table").hidden = state.expenses.length === 0;
+}
+
+function goalContribution(goal, rows) {
+  const remaining = Math.max(0, goal.target - goal.saved);
+  if (!remaining) return 0;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const daysRemaining = Math.max(
+    0,
+    Math.ceil((dateValue(goal.date) - today) / 86400000),
+  );
+  const paychecks = Math.max(0, Math.floor(daysRemaining / estimateCadenceDays(rows)));
+  return paychecks ? remaining / paychecks : remaining;
+}
+
+function renderGoals(rows) {
+  const totalSaved = state.goals.reduce((total, goal) => total + goal.saved, 0);
+  const totalRemaining = state.goals.reduce(
+    (total, goal) => total + Math.max(0, goal.target - goal.saved),
+    0,
+  );
+  el("goalsCount").textContent = state.goals.length;
+  el("goalsSavedTotal").textContent = currency.format(totalSaved);
+  el("goalsRemainingTotal").textContent = currency.format(totalRemaining);
+
+  el("goalsTableBody").innerHTML = state.goals
+    .map((goal) => {
+      const progress = goal.target ? clamp(goal.saved / goal.target, 0, 1) : 0;
+      return `
+        <tr>
+          <td><strong>${escapeHtml(goal.name)}</strong></td>
+          <td class="number">
+            <span class="table-progress"><i style="width:${progress * 100}%"></i></span>
+            ${percent.format(progress)}
+          </td>
+          <td class="number">${currency.format(goal.saved)} / ${currency.format(goal.target)}</td>
+          <td>${escapeHtml(formatDate(goal.date))}</td>
+          <td class="number net-cell">${currency.format(goalContribution(goal, rows))}</td>
+          <td class="record-actions">
+            <button type="button" data-edit-goal="${escapeHtml(goal.id)}">Edit</button>
+            <button type="button" data-delete-goal="${escapeHtml(goal.id)}">Delete</button>
+          </td>
+        </tr>`;
+    })
+    .join("");
+  el("goalsEmpty").hidden = state.goals.length > 0;
+  el("goalsTableBody").closest("table").hidden = state.goals.length === 0;
+}
+
+function clearGoalForm() {
+  state.goalEditingId = null;
+  el("goalForm").reset();
+  el("goalSaved").value = "0";
+  el("goalSubmit").textContent = "Add goal";
+  el("goalCancelEdit").hidden = true;
+}
+
+function planningRows() {
+  return state.filteredRows.length ? state.filteredRows : state.allRows;
+}
+
+function createRecordId(prefix) {
+  const suffix =
+    typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${prefix}-${suffix}`;
+}
+
+function changeAllocationMode() {
+  const nextMode = el("allocationMode").value === "amount" ? "amount" : "percent";
+  if (nextMode === state.allocationMode) return;
+  const net = state.calculatorNet;
+  Object.keys(DEFAULT_ALLOCATIONS).forEach((key) => {
+    state.allocations[key] =
+      nextMode === "amount"
+        ? net * (state.allocations[key] / 100)
+        : net
+          ? (state.allocations[key] / net) * 100
+          : 0;
+    const inputId = `allocation${key[0].toUpperCase()}${key.slice(1)}`;
+    el(inputId).value = state.allocations[key].toFixed(2);
+  });
+  state.allocationMode = nextMode;
+  renderAllocation();
+  persistPlanner();
+}
+
+function addExpense(event) {
+  event.preventDefault();
+  const name = el("expenseName").value.trim();
+  const amount = Math.max(0, inputNumber("expenseAmount"));
+  if (!name || !amount) {
+    showToast("Enter an expense name and amount.");
+    return;
+  }
+  state.expenses.push({
+    id: createRecordId("expense"),
+    name: name.slice(0, 80),
+    category: el("expenseCategory").value,
+    amount,
+    frequency: el("expenseFrequency").value,
+  });
+  el("expenseForm").reset();
+  el("expenseCategory").value = "Other";
+  el("expenseFrequency").value = "monthly";
+  renderExpenses(planningRows());
+  persistPlanner(true);
+  showToast(`${name} was added to recurring expenses.`);
+}
+
+function handleExpenseTableClick(event) {
+  const button = event.target.closest("[data-delete-expense]");
+  if (!button) return;
+  const expense = state.expenses.find((item) => item.id === button.dataset.deleteExpense);
+  state.expenses = state.expenses.filter((item) => item.id !== button.dataset.deleteExpense);
+  renderExpenses(planningRows());
+  persistPlanner(true);
+  showToast(`${expense?.name || "Expense"} was removed.`);
+}
+
+function saveGoal(event) {
+  event.preventDefault();
+  const name = el("goalName").value.trim();
+  const target = Math.max(0, inputNumber("goalTarget"));
+  const saved = Math.max(0, inputNumber("goalSaved"));
+  const date = el("goalDate").value;
+  if (!name || !target || !date) {
+    showToast("Enter a goal name, target amount, and target date.");
+    return;
+  }
+  const goal = {
+    id: state.goalEditingId || createRecordId("goal"),
+    name: name.slice(0, 80),
+    target,
+    saved,
+    date,
+  };
+  if (state.goalEditingId) {
+    state.goals = state.goals.map((item) => (item.id === state.goalEditingId ? goal : item));
+  } else {
+    state.goals.push(goal);
+  }
+  const action = state.goalEditingId ? "updated" : "added";
+  clearGoalForm();
+  renderGoals(planningRows());
+  persistPlanner(true);
+  showToast(`${name} was ${action}.`);
+}
+
+function handleGoalTableClick(event) {
+  const editButton = event.target.closest("[data-edit-goal]");
+  const deleteButton = event.target.closest("[data-delete-goal]");
+  if (editButton) {
+    const goal = state.goals.find((item) => item.id === editButton.dataset.editGoal);
+    if (!goal) return;
+    state.goalEditingId = goal.id;
+    el("goalName").value = goal.name;
+    el("goalTarget").value = goal.target;
+    el("goalSaved").value = goal.saved;
+    el("goalDate").value = goal.date;
+    el("goalSubmit").textContent = "Update goal";
+    el("goalCancelEdit").hidden = false;
+    el("goalName").focus();
+  }
+  if (deleteButton) {
+    const goal = state.goals.find((item) => item.id === deleteButton.dataset.deleteGoal);
+    state.goals = state.goals.filter((item) => item.id !== deleteButton.dataset.deleteGoal);
+    if (state.goalEditingId === deleteButton.dataset.deleteGoal) clearGoalForm();
+    renderGoals(planningRows());
+    persistPlanner(true);
+    showToast(`${goal?.name || "Goal"} was removed.`);
+  }
+}
+
+function renderHealth(rows) {
+  if (!rows.length) return;
+  const reconciled = rows.filter(
+    (row) =>
+      Math.abs(
+        row.gross_pay - row.total_taxes - row.total_deductions - row.net_pay,
+      ) <= 0.02,
+  ).length;
+  const signatures = new Set();
+  let duplicateCount = 0;
+  rows.forEach((row) => {
+    const signature = [
+      row.pay_date,
+      row.period_begin,
+      row.period_end,
+      Number(row.gross_pay).toFixed(2),
+      Number(row.net_pay).toFixed(2),
+    ].join("|");
+    if (signatures.has(signature)) duplicateCount += 1;
+    signatures.add(signature);
+  });
+  const complete = rows.filter(
+    (row) =>
+      row.pay_date &&
+      row.period_begin &&
+      row.period_end &&
+      Number.isFinite(row.gross_pay) &&
+      Number.isFinite(row.net_pay),
+  ).length;
+  const ordered = [...rows].sort((a, b) => a.pay_date.localeCompare(b.pay_date));
+  const cadenceDays = estimateCadenceDays(rows);
+  const cadenceGaps = ordered.slice(1).filter((row, index) => {
+    const gap = Math.round(
+      (dateValue(row.pay_date) - dateValue(ordered[index].pay_date)) / 86400000,
+    );
+    return gap > cadenceDays * 1.6;
+  }).length;
+  const reconciliationFailures = rows.length - reconciled;
+  const missingRows = rows.length - complete;
+  const score = Math.round(
+    clamp(
+      100 -
+        (reconciliationFailures / rows.length) * 40 -
+        (missingRows / rows.length) * 20 -
+        Math.min(25, duplicateCount * 10) -
+        Math.min(15, cadenceGaps * 3),
+      0,
+      100,
+    ),
+  );
+
+  el("healthScore").textContent = `${score}`;
+  el("healthReconcile").textContent = `${reconciled} of ${rows.length} pass`;
+  el("healthDuplicates").textContent = duplicateCount ? `${duplicateCount} found` : "None found";
+  el("healthFields").textContent = `${complete} of ${rows.length} complete`;
+  el("healthCadence").textContent = cadenceGaps ? `${cadenceGaps} unusual` : "No unusual gaps";
+  [
+    ["healthReconcileIcon", reconciliationFailures],
+    ["healthDuplicateIcon", duplicateCount],
+    ["healthFieldsIcon", missingRows],
+    ["healthCadenceIcon", cadenceGaps],
+  ].forEach(([id, issueCount]) => {
+    el(id).textContent = issueCount ? "!" : "✓";
+    el(id).classList.toggle("has-issue", Boolean(issueCount));
+  });
+}
+
+function renderPlanning(rows) {
+  if (!state.calculatorDirty) resetCalculatorDefaults(rows);
+  else renderCalculator();
+  renderExpenses(rows);
+  renderGoals(rows);
+  renderHealth(state.allRows);
 }
 
 function renderProjection(rows) {
@@ -852,6 +1441,50 @@ function updateHeader(rows) {
   el("dataStatus").textContent = state.sourceName;
 }
 
+function renderActiveView() {
+  const hasData = state.filteredRows.length > 0;
+  const planningActive = state.activeView === "planning";
+
+  document.querySelector(".filter-bar").hidden = planningActive;
+  el("kpiGrid").hidden = planningActive || !hasData;
+  document.querySelector(".chart-grid").hidden = planningActive || !hasData;
+  el("healthPanel").hidden = planningActive || !hasData;
+  el("history").hidden = planningActive || !hasData;
+  el("planning").hidden = !planningActive || !hasData;
+  el("emptyState").hidden = planningActive || hasData;
+
+  el("overviewTab").classList.toggle("active", !planningActive);
+  el("overviewTab").toggleAttribute("aria-current", !planningActive);
+  el("planningTab").classList.toggle("active", planningActive);
+  el("planningTab").toggleAttribute("aria-current", planningActive);
+}
+
+function activateView(view, scrollTarget = null, updateUrl = true) {
+  state.activeView = view === "planning" ? "planning" : "overview";
+  renderActiveView();
+
+  const hash = scrollTarget ? `#${scrollTarget}` : state.activeView === "planning" ? "#planning" : "#overview";
+  if (updateUrl && window.location.hash !== hash) {
+    window.history.pushState(null, "", hash);
+  }
+
+  window.requestAnimationFrame(() => {
+    const target = scrollTarget ? el(scrollTarget) : state.activeView === "planning" ? el("planning") : el("overview");
+    target?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
+
+function activateViewFromLocation() {
+  const target = window.location.hash.slice(1);
+  if (target === "planning") {
+    activateView("planning", null, false);
+  } else if (target === "forecast" || target === "history") {
+    activateView("overview", target, false);
+  } else {
+    activateView("overview", null, false);
+  }
+}
+
 function applyFilters() {
   const year = el("yearFilter").value;
   const from = el("dateFrom").value;
@@ -888,11 +1521,13 @@ function updateDashboard() {
   renderInsights(rows);
 
   const hasData = rows.length > 0;
-  el("emptyState").hidden = hasData;
-  document.querySelector(".chart-grid").hidden = !hasData;
-  el("kpiGrid").hidden = !hasData;
-  if (hasData) renderCharts(rows);
-  else destroyCharts();
+  if (hasData) {
+    renderCharts(rows);
+    renderPlanning(rows);
+  } else {
+    destroyCharts();
+  }
+  renderActiveView();
 }
 
 function populateFilterOptions() {
@@ -1121,6 +1756,13 @@ async function loadBundledCSV() {
 }
 
 function bindEvents() {
+  document.querySelectorAll(".section-nav a[data-view]").forEach((link) => {
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      activateView(link.dataset.view, link.dataset.scrollTarget || null);
+    });
+  });
+  window.addEventListener("popstate", activateViewFromLocation);
   ["yearFilter", "dateFrom", "dateTo"].forEach((id) =>
     el(id).addEventListener("change", applyFilters),
   );
@@ -1131,6 +1773,35 @@ function bindEvents() {
   );
   el("searchInput").addEventListener("input", applyFilters);
   el("resetFilters").addEventListener("click", resetFilters);
+  [
+    "calcRate",
+    "calcHours",
+    "calcOvertime",
+    "calcBonus",
+    "calcTaxRate",
+    "calcDeductionRate",
+  ].forEach((id) =>
+    el(id).addEventListener("input", () => {
+      state.calculatorDirty = true;
+      renderCalculator();
+    }),
+  );
+  el("resetCalculator").addEventListener("click", () => {
+    resetCalculatorDefaults(state.filteredRows.length ? state.filteredRows : state.allRows);
+    showToast("Calculator reset to recent payroll averages.");
+  });
+  el("allocationMode").addEventListener("change", changeAllocationMode);
+  document.querySelectorAll("[data-allocation]").forEach((input) =>
+    input.addEventListener("input", () => {
+      renderAllocation();
+      persistPlanner();
+    }),
+  );
+  el("expenseForm").addEventListener("submit", addExpense);
+  el("expensesTableBody").addEventListener("click", handleExpenseTableClick);
+  el("goalForm").addEventListener("submit", saveGoal);
+  el("goalCancelEdit").addEventListener("click", clearGoalForm);
+  el("goalsTableBody").addEventListener("click", handleGoalTableClick);
   el("exportButton").addEventListener("click", exportFilteredRows);
   el("ingestButton").addEventListener("click", openIngestModal);
   el("closeIngest").addEventListener("click", closeIngestModal);
@@ -1203,8 +1874,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   try {
     configureChartDefaults();
     bindEvents();
+    await loadPlannerState();
     await checkIngestionAvailability();
     await loadBundledCSV();
+    activateViewFromLocation();
   } catch (error) {
     console.error(error);
     showToast(error.message);

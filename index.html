@@ -54,7 +54,7 @@
     </header>
 
     <main id="dashboard" class="shell">
-      <section class="hero" aria-labelledby="pageTitle">
+      <section id="overview" class="hero" aria-labelledby="pageTitle">
         <div>
           <p class="eyebrow">PAYROLL OVERVIEW</p>
           <h1 id="pageTitle">Your pay, made clear.</h1>
@@ -65,6 +65,13 @@
           <span id="dataStatus">Reading local CSV</span>
         </div>
       </section>
+
+      <nav class="section-nav" aria-label="Dashboard sections">
+        <a id="overviewTab" class="active" href="#overview" data-view="overview" aria-current="page">Overview</a>
+        <a href="#forecast" data-view="overview" data-scroll-target="forecast">Forecast</a>
+        <a href="#history" data-view="overview" data-scroll-target="history">Pay history</a>
+        <a id="planningTab" href="#planning" data-view="planning">Tools</a>
+      </nav>
 
       <section class="filter-bar" aria-label="Dashboard filters">
         <div class="field">
@@ -199,7 +206,7 @@
           </div>
         </article>
 
-        <article class="panel projection-panel">
+        <article id="forecast" class="panel projection-panel">
           <div class="panel-header projection-header">
             <div>
               <p class="panel-kicker">PROJECTION LAB</p>
@@ -315,7 +322,309 @@
         </article>
       </section>
 
-      <section class="panel table-panel" aria-labelledby="tableTitle">
+      <article id="healthPanel" class="panel health-panel">
+        <div class="health-intro">
+          <span class="tool-icon tool-icon-health" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 3 5 6v5c0 4.6 2.8 8 7 10 4.2-2 7-5.4 7-10V6z"></path>
+              <path d="m8.5 12 2.2 2.2 4.8-5"></path>
+            </svg>
+          </span>
+          <div>
+            <p class="panel-kicker">PAYROLL HEALTH</p>
+            <h3>Your data quality check</h3>
+            <p>Checks every loaded statement for reconciliation, duplicate signatures, missing fields, and unusual pay gaps.</p>
+          </div>
+        </div>
+        <div class="health-score">
+          <strong id="healthScore">—</strong>
+          <span>health score</span>
+        </div>
+        <div class="health-checks">
+          <div><span id="healthReconcileIcon" class="check-icon">✓</span><p>Reconciled net pay<strong id="healthReconcile">—</strong></p></div>
+          <div><span id="healthDuplicateIcon" class="check-icon">✓</span><p>Duplicate signatures<strong id="healthDuplicates">—</strong></p></div>
+          <div><span id="healthFieldsIcon" class="check-icon">✓</span><p>Required fields<strong id="healthFields">—</strong></p></div>
+          <div><span id="healthCadenceIcon" class="check-icon">✓</span><p>Pay cadence gaps<strong id="healthCadence">—</strong></p></div>
+        </div>
+      </article>
+
+      <section id="planning" class="planning-section" aria-labelledby="planningTitle">
+        <div class="section-heading">
+          <div>
+            <p class="panel-kicker">MONEY PLANNING</p>
+            <h2 id="planningTitle">Put every paycheck to work</h2>
+            <p>Model your pay, allocate every dollar, track expenses, and manage multiple savings goals.</p>
+          </div>
+          <span id="plannerSyncStatus" class="local-only-badge">
+            <span class="status-dot" aria-hidden="true"></span>
+            Connecting to planner storage
+          </span>
+        </div>
+
+        <div class="toolkit-grid">
+          <article class="panel tool-card calculator-card">
+            <div class="tool-card-header">
+              <span class="tool-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <rect x="5" y="3" width="14" height="18" rx="2"></rect>
+                  <path d="M8 7h8M8 11h2m4 0h2M8 15h2m4 0h2M8 18h2m4 0h2"></path>
+                </svg>
+              </span>
+              <div>
+                <p class="panel-kicker">WHAT-IF CALCULATOR</p>
+                <h3>Estimate a paycheck</h3>
+              </div>
+            </div>
+            <p class="tool-description">
+              Starts with recent payroll averages. Adjust the inputs to model a shift, raise, or bonus.
+            </p>
+            <div class="calculator-form">
+              <div class="field">
+                <label for="calcRate">Hourly rate</label>
+                <div class="input-prefix"><span>$</span><input id="calcRate" type="number" min="0" step="0.01" inputmode="decimal" /></div>
+              </div>
+              <div class="field">
+                <label for="calcHours">Regular hours</label>
+                <input id="calcHours" type="number" min="0" step="0.25" inputmode="decimal" />
+              </div>
+              <div class="field">
+                <label for="calcOvertime">Overtime hours</label>
+                <input id="calcOvertime" type="number" min="0" step="0.25" inputmode="decimal" />
+              </div>
+              <div class="field">
+                <label for="calcBonus">Bonus / other pay</label>
+                <div class="input-prefix"><span>$</span><input id="calcBonus" type="number" min="0" step="0.01" inputmode="decimal" /></div>
+              </div>
+              <div class="field">
+                <label for="calcTaxRate">Tax rate</label>
+                <div class="input-suffix"><input id="calcTaxRate" type="number" min="0" max="100" step="0.1" inputmode="decimal" /><span>%</span></div>
+              </div>
+              <div class="field">
+                <label for="calcDeductionRate">Deduction rate</label>
+                <div class="input-suffix"><input id="calcDeductionRate" type="number" min="0" max="100" step="0.1" inputmode="decimal" /><span>%</span></div>
+              </div>
+            </div>
+            <div class="calculator-result" aria-live="polite">
+              <div>
+                <span>Estimated gross</span>
+                <strong id="calcGross">—</strong>
+              </div>
+              <div class="calculator-net">
+                <span>Estimated take-home</span>
+                <strong id="calcNet">—</strong>
+              </div>
+            </div>
+            <div class="result-breakdown">
+              <span>Taxes <strong id="calcTaxes">—</strong></span>
+              <span>Deductions <strong id="calcDeductions">—</strong></span>
+              <span>Take-home rate <strong id="calcTakeHome">—</strong></span>
+            </div>
+            <button id="resetCalculator" class="text-button" type="button">Reset to recent averages</button>
+          </article>
+
+          <article class="panel tool-card allocation-card">
+            <div class="tool-card-header">
+              <span class="tool-icon tool-icon-orange" aria-hidden="true">
+                <svg viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="8"></circle>
+                  <path d="M12 4v8l6 4M12 12H4"></path>
+                </svg>
+              </span>
+              <div>
+                <p class="panel-kicker">PAYCHECK PLAN</p>
+                <h3>Allocate your take-home</h3>
+              </div>
+            </div>
+            <p class="tool-description">
+              Plan with percentages or exact dollar amounts. Changes save to the PayPulse server.
+            </p>
+            <div class="allocation-toolbar">
+              <div class="allocation-total">
+                <span>Paycheck to allocate</span>
+                <strong id="allocationNet">—</strong>
+              </div>
+              <div class="field allocation-mode-field">
+                <label for="allocationMode">Plan using</label>
+                <select id="allocationMode">
+                  <option value="percent">Percentages</option>
+                  <option value="amount">Dollar amounts</option>
+                </select>
+              </div>
+            </div>
+            <div class="allocation-list">
+              <label class="allocation-row" for="allocationNeeds">
+                <span><i class="allocation-dot needs"></i>Essentials</span>
+                <span class="allocation-input"><input id="allocationNeeds" data-allocation="needs" type="number" min="0" step="0.01" inputmode="decimal" /><b id="allocationNeedsUnit">%</b></span>
+                <strong id="allocationNeedsAmount">—</strong>
+              </label>
+              <label class="allocation-row" for="allocationSavings">
+                <span><i class="allocation-dot savings"></i>Savings</span>
+                <span class="allocation-input"><input id="allocationSavings" data-allocation="savings" type="number" min="0" step="0.01" inputmode="decimal" /><b id="allocationSavingsUnit">%</b></span>
+                <strong id="allocationSavingsAmount">—</strong>
+              </label>
+              <label class="allocation-row" for="allocationDebt">
+                <span><i class="allocation-dot debt"></i>Debt payoff</span>
+                <span class="allocation-input"><input id="allocationDebt" data-allocation="debt" type="number" min="0" step="0.01" inputmode="decimal" /><b id="allocationDebtUnit">%</b></span>
+                <strong id="allocationDebtAmount">—</strong>
+              </label>
+              <label class="allocation-row" for="allocationFlexible">
+                <span><i class="allocation-dot flexible"></i>Flexible</span>
+                <span class="allocation-input"><input id="allocationFlexible" data-allocation="flexible" type="number" min="0" step="0.01" inputmode="decimal" /><b id="allocationFlexibleUnit">%</b></span>
+                <strong id="allocationFlexibleAmount">—</strong>
+              </label>
+            </div>
+            <div class="allocation-bar" aria-hidden="true">
+              <span id="allocationNeedsBar" class="needs"></span>
+              <span id="allocationSavingsBar" class="savings"></span>
+              <span id="allocationDebtBar" class="debt"></span>
+              <span id="allocationFlexibleBar" class="flexible"></span>
+            </div>
+            <div id="allocationStatus" class="allocation-status" aria-live="polite">100% allocated</div>
+          </article>
+
+          <article class="panel tool-card records-card expenses-card">
+            <div class="records-card-header">
+              <div class="tool-card-header">
+                <span class="tool-icon tool-icon-expense" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M4 7h16v11H4zM7 4h10v3M8 12h5m-5 3h8"></path>
+                  </svg>
+                </span>
+                <div>
+                  <p class="panel-kicker">EXPENSE CALCULATOR</p>
+                  <h3>Track recurring expenses</h3>
+                </div>
+              </div>
+              <p>Add weekly, biweekly, monthly, annual, or one-time costs and compare them with expected take-home pay.</p>
+            </div>
+
+            <form id="expenseForm" class="records-form">
+              <div class="field field-name">
+                <label for="expenseName">Expense</label>
+                <input id="expenseName" type="text" maxlength="80" placeholder="Rent" required />
+              </div>
+              <div class="field">
+                <label for="expenseCategory">Category</label>
+                <select id="expenseCategory">
+                  <option>Housing</option>
+                  <option>Utilities</option>
+                  <option>Food</option>
+                  <option>Transportation</option>
+                  <option>Health</option>
+                  <option>Debt</option>
+                  <option>Entertainment</option>
+                  <option selected>Other</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="expenseAmount">Amount</label>
+                <div class="input-prefix"><span>$</span><input id="expenseAmount" type="number" min="0.01" step="0.01" inputmode="decimal" required /></div>
+              </div>
+              <div class="field">
+                <label for="expenseFrequency">Frequency</label>
+                <select id="expenseFrequency">
+                  <option value="weekly">Weekly</option>
+                  <option value="biweekly">Every 2 weeks</option>
+                  <option value="monthly" selected>Monthly</option>
+                  <option value="annual">Annual</option>
+                  <option value="one-time">One time</option>
+                </select>
+              </div>
+              <button class="button button-primary records-submit" type="submit">Add expense</button>
+            </form>
+
+            <div class="expense-summary" aria-live="polite">
+              <div><span>Recurring monthly</span><strong id="expenseMonthlyTotal">—</strong></div>
+              <div><span>Needed per paycheck</span><strong id="expensePerPaycheck">—</strong></div>
+              <div><span>Take-home after expenses</span><strong id="expenseRemaining">—</strong></div>
+              <div><span>Income committed</span><strong id="expenseRatio">—</strong></div>
+            </div>
+
+            <div class="tool-table-scroll">
+              <table class="tool-table">
+                <thead>
+                  <tr>
+                    <th>Expense</th>
+                    <th>Category</th>
+                    <th>Frequency</th>
+                    <th class="number">Amount</th>
+                    <th class="number">Monthly</th>
+                    <th><span class="sr-only">Actions</span></th>
+                  </tr>
+                </thead>
+                <tbody id="expensesTableBody"></tbody>
+              </table>
+              <div id="expensesEmpty" class="records-empty">No expenses saved yet.</div>
+            </div>
+          </article>
+
+          <article class="panel tool-card records-card goals-card">
+            <div class="records-card-header">
+              <div class="tool-card-header">
+                <span class="tool-icon tool-icon-gold" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="8"></circle>
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <path d="m14 10 5-5m0 0h-4m4 0v4"></path>
+                  </svg>
+                </span>
+                <div>
+                  <p class="panel-kicker">SAVINGS GOALS</p>
+                  <h3>Build multiple goal runways</h3>
+                </div>
+              </div>
+              <p>Save goals permanently, track progress, and see the contribution required from each upcoming paycheck.</p>
+            </div>
+
+            <form id="goalForm" class="records-form goal-records-form">
+              <div class="field field-name">
+                <label for="goalName">Goal name</label>
+                <input id="goalName" type="text" maxlength="80" placeholder="Emergency fund" required />
+              </div>
+              <div class="field">
+                <label for="goalTarget">Target</label>
+                <div class="input-prefix"><span>$</span><input id="goalTarget" type="number" min="0.01" step="0.01" inputmode="decimal" required /></div>
+              </div>
+              <div class="field">
+                <label for="goalSaved">Already saved</label>
+                <div class="input-prefix"><span>$</span><input id="goalSaved" type="number" min="0" step="0.01" inputmode="decimal" value="0" required /></div>
+              </div>
+              <div class="field">
+                <label for="goalDate">Target date</label>
+                <input id="goalDate" type="date" required />
+              </div>
+              <button id="goalSubmit" class="button button-primary records-submit" type="submit">Add goal</button>
+              <button id="goalCancelEdit" class="text-button records-cancel" type="button" hidden>Cancel edit</button>
+            </form>
+
+            <div class="goal-summary" aria-live="polite">
+              <span><strong id="goalsCount">0</strong> active goals</span>
+              <span><strong id="goalsSavedTotal">—</strong> saved</span>
+              <span><strong id="goalsRemainingTotal">—</strong> remaining</span>
+            </div>
+
+            <div class="tool-table-scroll">
+              <table class="tool-table goals-table">
+                <thead>
+                  <tr>
+                    <th>Goal</th>
+                    <th class="number">Progress</th>
+                    <th class="number">Saved / target</th>
+                    <th>Target date</th>
+                    <th class="number">Per paycheck</th>
+                    <th><span class="sr-only">Actions</span></th>
+                  </tr>
+                </thead>
+                <tbody id="goalsTableBody"></tbody>
+              </table>
+              <div id="goalsEmpty" class="records-empty">No savings goals saved yet.</div>
+            </div>
+          </article>
+        </div>
+
+      </section>
+
+      <section id="history" class="panel table-panel" aria-labelledby="tableTitle">
         <div class="table-header">
           <div>
             <p class="panel-kicker">PAY STATEMENTS</p>
