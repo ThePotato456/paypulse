@@ -1,0 +1,29 @@
+# Dependencies and build output
+node_modules/
+dist/
+build/
+.cache/
+tmp/
+data/backups/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local servers and environment files
+*.log
+.env
+.env.*
+!.env.example
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Generated packages and browser-test artifacts
+*.zip
+*-preview.png
+dashboard-*.png
+data/*

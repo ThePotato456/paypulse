@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="A private, self-hosted payroll dashboard powered by a local CSV file and Chart.js."
+    />
+    <title>PayPulse — Payroll dashboard</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23183a5a'/><path d='M8 23V14m8 9V8m8 15V11' fill='none' stroke='%2310a58f' stroke-width='3' stroke-linecap='round'/></svg>"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#dashboard">Skip to dashboard</a>
+
+    <header class="site-header">
+      <div class="shell header-inner">
+        <a class="brand" href="#" aria-label="PayPulse dashboard home">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" role="img">
+              <path d="M5 23V13m7 10V8m7 15V16m7 7V5" />
+            </svg>
+          </span>
+          <span>
+            <strong>PayPulse</strong>
+            <small>Payroll intelligence</small>
+          </span>
+        </a>
+
+        <div class="header-actions">
+          <span class="privacy-chip">
+            <span class="status-dot" aria-hidden="true"></span>
+            Private browser analysis
+          </span>
+          <button id="ingestButton" class="button button-primary" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v5h14v-5" />
+            </svg>
+            Ingest paystub
+          </button>
+          <label class="button button-secondary" for="csvUpload">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v5h14v-5" />
+            </svg>
+            Load CSV
+          </label>
+          <input id="csvUpload" type="file" accept=".csv,text/csv" hidden />
+        </div>
+      </div>
+    </header>
+
+    <main id="dashboard" class="shell">
+      <section class="hero" aria-labelledby="pageTitle">
+        <div>
+          <p class="eyebrow">PAYROLL OVERVIEW</p>
+          <h1 id="pageTitle">Your pay, made clear.</h1>
+          <p id="coverageText" class="hero-copy">Loading payroll history…</p>
+        </div>
+        <div class="hero-meta">
+          <span id="recordCount">— statements</span>
+          <span id="dataStatus">Reading local CSV</span>
+        </div>
+      </section>
+
+      <section class="filter-bar" aria-label="Dashboard filters">
+        <div class="field">
+          <label for="yearFilter">Year</label>
+          <select id="yearFilter">
+            <option value="all">All years</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="dateFrom">From</label>
+          <input id="dateFrom" type="date" />
+        </div>
+        <div class="field">
+          <label for="dateTo">To</label>
+          <input id="dateTo" type="date" />
+        </div>
+        <div class="field field-search">
+          <label for="searchInput">Search pay type or date</label>
+          <div class="search-wrap">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="7"></circle>
+              <path d="m16.5 16.5 4 4"></path>
+            </svg>
+            <input id="searchInput" type="search" placeholder="e.g. 2025 or direct deposit" />
+          </div>
+        </div>
+        <button id="resetFilters" class="button button-ghost" type="button">Reset</button>
+      </section>
+
+      <section id="kpiGrid" class="kpi-grid" aria-label="Payroll summary">
+        <article class="kpi-card kpi-primary">
+          <div class="kpi-heading">
+            <span>Total net pay</span>
+            <span class="icon-box" aria-hidden="true">$</span>
+          </div>
+          <strong id="kpiNet">—</strong>
+          <small id="kpiNetSub">Across selected statements</small>
+        </article>
+        <article class="kpi-card">
+          <div class="kpi-heading">
+            <span>Total gross pay</span>
+            <span class="icon-box" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M5 19V9m7 10V5m7 14v-7" /></svg>
+            </span>
+          </div>
+          <strong id="kpiGross">—</strong>
+          <small id="kpiGrossSub">Before taxes and deductions</small>
+        </article>
+        <article class="kpi-card">
+          <div class="kpi-heading">
+            <span>Take-home rate</span>
+            <span class="icon-box" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" /><path d="M9 9h.01M15 15h.01M8.5 15.5l7-7" /></svg>
+            </span>
+          </div>
+          <strong id="kpiTakeHome">—</strong>
+          <small id="kpiTakeHomeSub">Net pay as a share of gross</small>
+        </article>
+        <article class="kpi-card">
+          <div class="kpi-heading">
+            <span>Hours worked</span>
+            <span class="icon-box" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" /><path d="M12 7v5l3 2" /></svg>
+            </span>
+          </div>
+          <strong id="kpiHours">—</strong>
+          <small id="kpiHoursSub">Average gross rate: —</small>
+        </article>
+        <article class="kpi-card">
+          <div class="kpi-heading">
+            <span>Average paycheck</span>
+            <span class="icon-box" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M5 7h14v10H5z" /><path d="M8 12h.01M16 12h.01" /></svg>
+            </span>
+          </div>
+          <strong id="kpiAverage">—</strong>
+          <small id="kpiAverageSub">Based on net pay</small>
+        </article>
+      </section>
+
+      <section class="chart-grid" aria-label="Interactive payroll charts">
+        <article class="panel panel-wide">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">PAY HISTORY</p>
+              <h2>Gross and net pay trend</h2>
+            </div>
+            <span class="chart-key"><i class="key-gross"></i>Gross <i class="key-net"></i>Net</span>
+          </div>
+          <div class="chart-wrap chart-tall">
+            <canvas id="payTrendChart" role="img" aria-label="Line chart of gross and net pay over time"></canvas>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">PAY COMPOSITION</p>
+              <h2>Where gross pay went</h2>
+            </div>
+          </div>
+          <div class="chart-wrap chart-doughnut">
+            <canvas id="compositionChart" role="img" aria-label="Doughnut chart showing net pay, taxes, and deductions"></canvas>
+            <div class="doughnut-center" aria-hidden="true">
+              <span>Take home</span>
+              <strong id="donutRate">—</strong>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">WITHHOLDINGS</p>
+              <h2>Taxes and deductions</h2>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="withholdingsChart" role="img" aria-label="Bar chart of tax and deduction categories"></canvas>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">EARNINGS RELATIONSHIP</p>
+              <h2>Hours versus gross pay</h2>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="hoursChart" role="img" aria-label="Scatter chart of hours worked versus gross pay"></canvas>
+          </div>
+        </article>
+
+        <article class="panel projection-panel">
+          <div class="panel-header projection-header">
+            <div>
+              <p class="panel-kicker">PROJECTION LAB</p>
+              <h2>Future paycheck outlook</h2>
+              <p>Scenario estimates based on the cadence, recent earnings, and withholding rates in the current view.</p>
+            </div>
+            <div class="projection-controls" aria-label="Projection settings">
+              <div class="field">
+                <label for="projectionScenario">Scenario</label>
+                <select id="projectionScenario">
+                  <option value="conservative">Conservative −5%</option>
+                  <option value="expected" selected>Expected</option>
+                  <option value="upside">Upside +5%</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="projectionHorizon">Horizon</label>
+                <select id="projectionHorizon">
+                  <option value="3">3 months</option>
+                  <option value="6" selected>6 months</option>
+                  <option value="12">12 months</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div class="projection-metrics">
+            <div>
+              <span>Next estimated net</span>
+              <strong id="projectionNextNet">—</strong>
+              <small id="projectionNextDate">Next expected pay date</small>
+            </div>
+            <div>
+              <span>Projected gross</span>
+              <strong id="projectionGross">—</strong>
+              <small id="projectionGrossSub">Across forecast horizon</small>
+            </div>
+            <div>
+              <span>Projected net</span>
+              <strong id="projectionNet">—</strong>
+              <small id="projectionNetSub">Across forecast horizon</small>
+            </div>
+            <div>
+              <span>Annualized net pace</span>
+              <strong id="projectionAnnualized">—</strong>
+              <small id="projectionCadence">Estimated pay cadence</small>
+            </div>
+          </div>
+
+          <div class="projection-content">
+            <div class="chart-wrap projection-chart-wrap">
+              <canvas
+                id="projectionChart"
+                role="img"
+                aria-label="Line chart extending actual net pay into projected future paychecks"
+              ></canvas>
+            </div>
+            <div class="forecast-schedule">
+              <div class="forecast-schedule-header">
+                <div>
+                  <p class="panel-kicker">ESTIMATED SCHEDULE</p>
+                  <h3>Upcoming paychecks</h3>
+                </div>
+                <span id="projectionCount" class="live-badge"><span></span>— estimates</span>
+              </div>
+              <div id="forecastRows" class="forecast-rows"></div>
+            </div>
+          </div>
+
+          <div class="projection-note">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="9"></circle>
+              <path d="M12 11v5m0-8h.01"></path>
+            </svg>
+            <p>
+              Projections are planning estimates, not guaranteed income. The model uses recent payroll,
+              caps trend extremes, and applies recent tax and deduction ratios. Bonuses, schedule changes,
+              raises, and withholding changes can materially affect results.
+            </p>
+          </div>
+        </article>
+
+        <article class="panel annual-panel">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">YEARLY COMPARISON</p>
+              <h2>Annual pay and take-home rate</h2>
+            </div>
+            <span class="chart-key">
+              <i class="key-gross"></i>Gross
+              <i class="key-net"></i>Net
+              <i class="key-rate"></i>Take home
+            </span>
+          </div>
+          <div class="chart-wrap annual-chart-wrap">
+            <canvas
+              id="annualChart"
+              role="img"
+              aria-label="Combined bar and line chart comparing annual gross pay, net pay, and take-home rate"
+            ></canvas>
+          </div>
+        </article>
+
+        <article class="panel insight-panel">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">LIVE ANALYSIS</p>
+              <h2>What stands out</h2>
+            </div>
+            <span class="live-badge"><span></span>Updates with filters</span>
+          </div>
+          <div id="insightList" class="insight-list" aria-live="polite"></div>
+        </article>
+      </section>
+
+      <section class="panel table-panel" aria-labelledby="tableTitle">
+        <div class="table-header">
+          <div>
+            <p class="panel-kicker">PAY STATEMENTS</p>
+            <h2 id="tableTitle">Pay history</h2>
+            <p id="tableCaption">Standard payroll fields only; identifiers are excluded.</p>
+          </div>
+          <button id="exportButton" class="button button-secondary" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 4v12m0 0 4.5-4.5M12 16l-4.5-4.5M5 19h14" />
+            </svg>
+            Export view
+          </button>
+        </div>
+
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th><button type="button" data-sort="pay_date">Pay date <span>↕</span></button></th>
+                <th>Pay period</th>
+                <th><button type="button" data-sort="payment_type">Pay type <span>↕</span></button></th>
+                <th class="number"><button type="button" data-sort="hours_units">Hours <span>↕</span></button></th>
+                <th class="number"><button type="button" data-sort="regular_rate">Rate <span>↕</span></button></th>
+                <th class="number"><button type="button" data-sort="gross_pay">Gross <span>↕</span></button></th>
+                <th class="number"><button type="button" data-sort="total_taxes">Taxes <span>↕</span></button></th>
+                <th class="number"><button type="button" data-sort="total_deductions">Deductions <span>↕</span></button></th>
+                <th class="number"><button type="button" data-sort="net_pay">Net pay <span>↕</span></button></th>
+              </tr>
+            </thead>
+            <tbody id="payTableBody"></tbody>
+          </table>
+        </div>
+        <div class="table-footer">
+          <span id="tableCount">Showing — statements</span>
+          <div class="pagination">
+            <label for="pageSize">Rows</label>
+            <select id="pageSize">
+              <option value="10">10</option>
+              <option value="20" selected>20</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+            <button id="prevPage" type="button" aria-label="Previous page">←</button>
+            <span id="pageLabel">Page 1 of 1</span>
+            <button id="nextPage" type="button" aria-label="Next page">→</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="emptyState" class="empty-state" hidden>
+        <strong>No statements match these filters.</strong>
+        <p>Reset the filters or load another payroll CSV.</p>
+      </section>
+    </main>
+
+    <footer>
+      <div class="shell footer-inner">
+        <p>PayPulse processes payroll data locally in your browser.</p>
+        <p>Chart.js 4.5.1 · Sanitized payroll fields</p>
+      </div>
+    </footer>
+
+    <div id="ingestModal" class="modal" hidden>
+      <button class="modal-backdrop" type="button" data-close-ingest aria-label="Close ingestion dialog"></button>
+      <section
+        class="modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="ingestTitle"
+        aria-describedby="ingestDescription"
+      >
+        <div class="modal-header">
+          <div>
+            <p class="panel-kicker">PAYSTUB INGESTION</p>
+            <h2 id="ingestTitle">Add a statement to pay history</h2>
+            <p id="ingestDescription">
+              Upload a supported paystub PDF. PayPulse extracts, reconciles, de-duplicates,
+              and appends only sanitized payroll fields.
+            </p>
+          </div>
+          <button id="closeIngest" class="modal-close" type="button" aria-label="Close dialog">×</button>
+        </div>
+
+        <label id="pdfDropzone" class="dropzone" for="pdfUpload">
+          <input id="pdfUpload" type="file" accept=".pdf,application/pdf" hidden />
+          <span class="dropzone-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M7 3h7l4 4v14H7z"></path>
+              <path d="M14 3v5h5M12 17v-6m0 0-2.5 2.5M12 11l2.5 2.5"></path>
+            </svg>
+          </span>
+          <strong>Drop a paystub PDF here</strong>
+          <span>or click to choose a file · maximum 15 MB</span>
+        </label>
+
+        <div id="selectedPdf" class="selected-file" hidden>
+          <div>
+            <strong id="selectedPdfName">—</strong>
+            <span id="selectedPdfSize">—</span>
+          </div>
+          <button id="clearPdf" type="button">Remove</button>
+        </div>
+
+        <div id="ingestResult" class="ingest-result" aria-live="polite" hidden></div>
+
+        <div class="modal-actions">
+          <p>
+            The PDF stays on this self-hosted server and is deleted immediately after processing.
+          </p>
+          <button id="processPdf" class="button button-primary" type="button" disabled>
+            Analyze and add
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <script src="vendor/chart.umd.min.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
