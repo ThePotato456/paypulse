@@ -1,89 +1,227 @@
-# PayPulse payroll dashboard
+<div align="center">
 
-A self-hosted payroll dashboard that reads `data/paystubs.csv` in the browser. It uses a locally bundled copy of Chart.js 4.5.1 and does not send payroll or planning data to an external service. The bundled CSV is a sanitized copy containing payroll measures only.
+# PayPulse
 
-## Run locally
+### Private, self-hosted payroll intelligence and paycheck planning
 
-From the `pay-dashboard` folder:
+Turn sanitized pay history into clear trends, forecasts, expense plans, and savings goals—all without sending financial data to an external service.
+
+![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
+![Chart.js 4.5.1](https://img.shields.io/badge/Chart.js-4.5.1-FF6384?style=flat-square&logo=chartdotjs&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-5%20passing-10A58F?style=flat-square)
+![Deployment](https://img.shields.io/badge/deployment-self--hosted-183A5A?style=flat-square)
+![Privacy](https://img.shields.io/badge/privacy-local--first-087C6D?style=flat-square)
+
+</div>
+
+> [!NOTE]
+> Every screenshot in this README was generated from fully simulated payroll and planner fixtures. No real employee, paystub, expense, or savings-goal data is shown.
+
+![PayPulse dashboard overview](docs/images/dashboard-overview.png)
+
+## Overview
+
+PayPulse is a local payroll dashboard for understanding how earnings, taxes, deductions, hours, and take-home pay change over time. It combines an interactive browser experience with a small Python server that handles durable planner storage and privacy-conscious PDF paystub ingestion.
+
+The dashboard ships with a locally bundled copy of Chart.js and makes no external application requests. Payroll records remain in a local CSV, while allocations, expenses, and savings goals are stored in a separate local planner file.
+
+## Highlights
+
+| Area | Capabilities |
+| --- | --- |
+| **Payroll overview** | Gross and net trends, composition, effective tax rate, recorded hours, average paycheck, and filter-aware KPIs |
+| **Forecasting** | Adjustable 3-, 6-, and 12-month projections with conservative, expected, and upside scenarios |
+| **Tools** | Paycheck what-if calculator, take-home allocation by percentage or dollar amount, recurring expenses, and savings goals |
+| **Data quality** | Reconciliation checks, duplicate signatures, required-field coverage, and unusual pay-cadence detection |
+| **History** | Searchable, sortable, paginated pay statements with filtered CSV export |
+| **Ingestion** | PDF extraction, reconciliation, duplicate protection, atomic CSV writes, and timestamped backups |
+| **Privacy** | Local processing, sanitized fields, no external analytics, and no cloud account requirement |
+
+## Feature tour
+
+### Paycheck modeling and allocation
+
+The Tools workspace starts from recent payroll averages. Model changes to rate, hours, overtime, bonuses, taxes, or deductions, then allocate the resulting take-home pay using percentages or exact dollar amounts.
+
+![Paycheck calculator and allocation tools](docs/images/tools-overview.png)
+
+### Recurring expense planning
+
+Track weekly, biweekly, monthly, annual, and one-time expenses. PayPulse normalizes recurring costs, estimates the amount required from each paycheck, and shows the remaining take-home pay.
+
+![Recurring expense calculator](docs/images/expense-planning.png)
+
+### Persistent savings goals
+
+Maintain multiple savings goals with target dates, saved balances, progress indicators, and a recommended contribution per estimated paycheck.
+
+![Savings goals table](docs/images/savings-goals.png)
+
+### Reconciled paystub ingestion
+
+Upload a supported PDF statement to extract and append sanitized payroll fields. Temporary source files are deleted immediately after processing.
+
+![Paystub ingestion dialog](docs/images/paystub-ingestion.png)
+
+## Architecture
+
+```mermaid
+flowchart LR
+    PDF["Paystub PDF"] --> INGEST["Python ingestion pipeline"]
+    INGEST --> CHECKS["Reconciliation and duplicate checks"]
+    CHECKS --> CSV["data/paystubs.csv"]
+    CSV --> UI["Browser dashboard"]
+
+    UI --> API["Local PayPulse API"]
+    API --> PLANNER["data/planner.json"]
+    PLANNER --> UI
+```
+
+| Component | Responsibility |
+| --- | --- |
+| `index.html`, `styles.css`, `app.js` | Responsive interface, filtering, charts, projections, and planning calculations |
+| `server.py` | Static hosting, planner API, upload validation, and PDF-ingestion endpoint |
+| `ingestion.py` | Paystub extraction, reconciliation, deduplication, backups, and atomic CSV updates |
+| `data/paystubs.csv` | Sanitized payroll history used by the dashboard |
+| `data/planner.json` | Server-persisted allocations, expenses, and savings goals |
+| `vendor/chart.umd.min.js` | Locally bundled Chart.js runtime |
+
+## Quick start
+
+### Requirements
+
+- Python 3.10 or newer
+- A modern browser
+
+### Run PayPulse
+
+From the project root:
 
 ```powershell
 python -m pip install -r requirements.txt
 python server.py
 ```
 
-Then open `http://localhost:8000`.
+Open [http://localhost:8000](http://localhost:8000).
 
-The PayPulse server hosts the dashboard, provides the local PDF-ingestion endpoint, and stores Tools data in `data/planner.json`. A basic static server can still display the dashboard and use a browser-storage fallback, but it cannot append statements or provide durable server-side planner storage.
+The default server binds to `127.0.0.1`, keeping the application available only on the local machine.
 
-## Ingest a paystub
+## Add payroll data
 
-1. Start the dashboard with `python server.py`.
-2. Select **Ingest paystub** in the header.
-3. Choose or drop a supported paystub PDF.
+### From the dashboard
+
+1. Start PayPulse with `python server.py`.
+2. Select **Ingest paystub**.
+3. Choose or drop a supported PDF.
 4. Select **Analyze and add**.
 
-The server:
+For every supported statement, the ingestion pipeline:
 
-- extracts every supported statement page in the PDF;
-- stores no employee, company, payment, bank-account, address, or source-document identifiers;
+- extracts each recognized statement page;
+- excludes employee, company, payment, bank-account, address, and source-document identifiers;
 - verifies gross pay against paid earnings;
 - verifies tax and deduction component totals;
-- verifies `gross - taxes - deductions = net`;
+- verifies `gross − taxes − deductions = net`;
 - detects duplicates using pay date, pay period, gross pay, and net pay;
-- creates a timestamped CSV backup before a successful append;
-- writes the CSV atomically and deletes the temporary PDF.
+- creates a timestamped backup before modifying the CSV;
+- writes changes atomically and deletes the temporary PDF.
 
-After a successful append, every metric, chart, projection, insight, and table row refreshes automatically.
-
-The same workflow is available from the command line:
+### From the command line
 
 ```powershell
-# Validate without changing the CSV
+# Validate a PDF without changing payroll history
 python ingestion.py "C:\path\to\paystub.pdf"
 
-# Append new, reconciled, nonduplicate statements
+# Append reconciled, nonduplicate statements
 python ingestion.py "C:\path\to\paystub.pdf" --append
 ```
 
-The **Load CSV** button remains available for temporary browser analysis of another compatible CSV. It does not modify the main pay-history file.
+The **Load CSV** action can analyze another compatible CSV temporarily in the browser. It does not overwrite the primary payroll history.
 
-## Included analysis
+## Persistent planning data
 
-- Gross and net pay trend
-- Net pay, taxes, and deductions composition
-- Tax and deduction category totals
-- Hours worked versus gross pay
-- Adjustable 3-, 6-, and 12-month paycheck projections
-- Conservative, expected, and upside forecast scenarios
-- Estimated upcoming paycheck schedule and annualized net pace
-- Annual gross, net, and take-home-rate comparison
-- Live payroll insights and summary metrics
-- Dedicated Tools tab with a paycheck what-if calculator seeded from recent averages
-- Take-home allocation by percentages or exact dollar amounts
-- Persistent expense calculator with weekly, biweekly, monthly, annual, and one-time costs
-- Multiple persistent savings goals with progress, editing, and per-paycheck runway guidance
-- Payroll health audit for reconciliation, duplicates, required fields, and cadence gaps
-- Filterable, sortable, paginated pay table
-- Export of the filtered standard payroll fields
-- PDF paystub ingestion with reconciliation, duplicate protection, backups, and live refresh
+The local server validates and atomically writes allocations, expenses, and savings goals to `data/planner.json`. Browser local storage acts only as an offline fallback and first-run migration source.
 
-Payment IDs, employee IDs, company IDs, and source-document fields are never shown or included in exports.
-
-## Planner persistence
-
-Allocations, expenses, and savings goals are validated and written atomically to
-`data/planner.json` by the local PayPulse server. Browser local storage is retained only as an
-offline backup and first-run migration source. Planner records are never added to the payroll CSV
-or sent to an external service.
-
-Use a different planner file when starting the server if needed:
+To use another planner file:
 
 ```powershell
 python server.py --planner "C:\path\to\planner.json"
 ```
 
+Planner records are kept separate from payroll history and are never included in payroll exports.
+
+## Configuration
+
+```text
+python server.py [--host HOST] [--port PORT] [--csv PATH] [--planner PATH]
+```
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--host` | `127.0.0.1` | Network interface used by the server |
+| `--port` | `8000` | HTTP port |
+| `--csv` | `data/paystubs.csv` | Payroll-history CSV |
+| `--planner` | `data/planner.json` | Persistent planning document |
+
+`PAY_DASHBOARD_HOST` and `PAY_DASHBOARD_PORT` can also provide the host and port through environment variables.
+
+## Local API
+
+| Method | Endpoint | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/health` | Reports ingestion and planner availability |
+| `GET` | `/api/planner` | Loads validated planning data |
+| `PUT` | `/api/planner` | Validates and atomically persists planning data |
+| `POST` | `/api/ingest` | Processes and appends an uploaded paystub PDF |
+
+Planner requests are limited to 128 KB. PDF uploads are limited to 15 MB.
+
 ## Projection methodology
 
-The projection lab estimates pay cadence from historical pay dates and models gross pay from up to the 12 most recent statements. Trend estimates are capped around the recent average to reduce outlier effects. Recent tax and deduction ratios are then applied to estimated gross pay. Conservative and upside scenarios apply a 5% adjustment to the stabilized expected case.
+PayPulse estimates pay cadence from historical pay dates and models gross pay from up to the 12 most recent statements. It caps trend extremes around the recent average, then applies recent tax and deduction ratios to estimate take-home pay. Conservative and upside scenarios adjust the stabilized expected case by 5%.
 
-Projections are planning estimates only. They do not account for future schedule changes, raises, bonuses, benefit elections, or withholding changes.
+Projections are planning estimates—not guaranteed income. Future schedules, raises, bonuses, benefit elections, and withholding changes can materially affect results.
+
+## Privacy and security
+
+- Payroll and planning data are not sent to an external application service.
+- Chart.js is bundled locally.
+- Uploaded PDFs are processed by the self-hosted server and deleted immediately afterward.
+- Only sanitized payroll fields are written to the CSV.
+- Direct identifiers are excluded from the dashboard and exported views.
+- CSV changes and planner updates use atomic writes.
+- The server adds `X-Content-Type-Options: nosniff` and a no-referrer policy.
+
+PayPulse does not implement authentication. Keep the default loopback binding unless the application is placed behind appropriate access controls.
+
+## Testing
+
+Run the complete test suite:
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+The tests cover statement extraction and reconciliation, duplicate-safe atomic appends, planner validation, invalid-record rejection, and planner persistence round trips.
+
+## Project structure
+
+```text
+paypulse/
+├── app.js
+├── index.html
+├── ingestion.py
+├── server.py
+├── styles.css
+├── requirements.txt
+├── data/
+│   ├── paystubs.csv
+│   └── planner.json          # Created after the first planner save
+├── docs/
+│   └── images/
+├── tests/
+│   ├── test_ingestion.py
+│   └── test_planner.py
+└── vendor/
+    └── chart.umd.min.js
+```
