@@ -80,6 +80,8 @@ def verify_password(password: str, encoded: str) -> bool:
 
 
 def normalize_paystub_record(record: dict[str, object]) -> dict[str, object]:
+    if not isinstance(record, dict):
+        raise ValueError("Every payroll statement must be a JSON object.")
     normalized: dict[str, object] = {}
     for field in CSV_FIELDS:
         value = record.get(field, "")
@@ -413,6 +415,25 @@ class PayPulseDatabase:
             "duplicates": duplicates,
             "total_records": total,
             "rows": results,
+        }
+
+    def add_paystub_records(
+        self, user_id: int, records: Iterable[dict[str, object]]
+    ) -> dict[str, int | str]:
+        """Persist normalized CSV/API records without duplicating a user's statements."""
+        record_list = list(records)
+        if len(record_list) > 10_000:
+            raise ValueError("A payroll import cannot contain more than 10,000 statements.")
+        with self.connect() as connection:
+            added, duplicates = self._insert_paystub_records(connection, user_id, record_list)
+            total = connection.execute(
+                "SELECT COUNT(*) FROM paystubs WHERE user_id = ?", (user_id,)
+            ).fetchone()[0]
+        return {
+            "status": "added" if added else "duplicate",
+            "added": added,
+            "duplicates": duplicates,
+            "total_records": total,
         }
 
     def list_paystubs(self, user_id: int) -> list[dict[str, object]]:

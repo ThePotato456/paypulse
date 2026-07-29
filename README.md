@@ -136,7 +136,7 @@ python ingestion.py "C:\path\to\paystub.pdf"
 python ingestion.py "C:\path\to\paystub.pdf" --append
 ```
 
-The command-line CSV append path remains available for legacy workflows while migration is phased out. The dashboard’s **Load CSV** action analyzes a compatible CSV temporarily in the browser and does not overwrite SQLite records.
+The command-line CSV append path remains available for legacy workflows while migration is phased out. The dashboard's **Import CSV** action saves compatible records to the signed-in user's SQLite account and skips duplicate statements.
 
 ## Accounts and persistent data
 
@@ -177,12 +177,13 @@ python server.py [--host HOST] [--port PORT] [--database PATH] [--csv PATH] [--p
 | `POST` | `/api/auth/register` | Creates a local account and session |
 | `POST` | `/api/auth/login`, `/api/auth/logout` | Starts or ends a session |
 | `GET` | `/api/paystubs` | Loads the signed-in user’s pay statements |
+| `POST` | `/api/paystubs/import` | Saves CSV payroll rows to the signed-in user's records |
 | `GET`, `PUT` | `/api/planner` | Loads or saves the signed-in user’s planner |
 | `POST` | `/api/ingest` | Processes a PDF into the signed-in user’s records |
 | `GET`, `POST` | `/api/users` | Lists or creates users as an administrator |
 | `PATCH`, `DELETE` | `/api/users/{id}` | Updates or deletes a user as an administrator |
 
-Planner requests are limited to 128 KB. PDF uploads are limited to 15 MB.
+Planner requests are limited to 128 KB, CSV imports to 4 MB or 10,000 statements, and PDF uploads to 15 MB.
 
 ## Projection methodology
 

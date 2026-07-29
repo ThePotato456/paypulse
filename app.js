@@ -2232,10 +2232,23 @@ function exportFilteredRows() {
   showToast(`Exported ${state.filteredRows.length} standard payroll rows.`);
 }
 
-async function setData(text, sourceName) {
-  const rows = parseCSV(text);
+async function importPaystubCSV(file) {
+  const rows = parseCSV(await file.text());
   validateRows(rows);
-  applyPaystubRows(rows, sourceName);
+  const response = await fetch("/api/paystubs/import", {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ records: rows }),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.message || "The payroll CSV could not be imported.");
+
+  await loadPaystubsFromServer();
+  const addedLabel = `${payload.added} statement${payload.added === 1 ? "" : "s"} saved`;
+  const duplicateLabel = payload.duplicates
+    ? `; ${payload.duplicates} duplicate${payload.duplicates === 1 ? "" : "s"} skipped`
+    : "";
+  showToast(`${addedLabel}${duplicateLabel}.`);
 }
 
 function applyPaystubRows(rows, sourceName) {
@@ -2256,12 +2269,12 @@ async function loadPaystubsFromServer() {
     applyPaystubRows(payload.paystubs || [], `SQLite · ${state.authUser.username}`);
   } catch (error) {
     el("coverageText").textContent =
-      "Your saved pay statements could not be loaded. Sign in again or load a temporary CSV.";
+      "Your saved pay statements could not be loaded. Sign in again and retry.";
     el("dataStatus").textContent = "Database unavailable";
     el("emptyState").hidden = false;
-    el("emptyState").querySelector("strong").textContent = "Add a paystub or load a CSV to begin.";
+    el("emptyState").querySelector("strong").textContent = "Add a paystub or import a CSV to begin.";
     el("emptyState").querySelector("p").textContent =
-      "PDF ingestion saves to your account. CSV loading remains temporary for analysis.";
+      "PDF and CSV imports are saved securely to your account.";
     document.querySelector(".chart-grid").hidden = true;
     el("kpiGrid").hidden = true;
     showToast(error.message);
@@ -2627,7 +2640,7 @@ function bindEvents() {
     const file = event.target.files?.[0];
     if (!file) return;
     try {
-      await setData(await file.text(), file.name);
+      await importPaystubCSV(file);
     } catch (error) {
       showToast(error.message);
     } finally {

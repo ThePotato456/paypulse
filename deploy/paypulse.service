@@ -1,0 +1,16 @@
+[Unit]
+Description=PayPulse payroll dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=user
+WorkingDirectory=/home/user/vscode_projects/paypulse
+ExecStart=/home/user/vscode_projects/paypulse/.venv/bin/python /home/user/vscode_projects/paypulse/server.py --host 0.0.0.0 --port 8780
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

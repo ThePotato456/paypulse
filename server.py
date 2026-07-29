@@ -28,6 +28,7 @@ DATABASE_PATH = PROJECT_DIR / "data" / "paypulse.db"
 DATABASE = PayPulseDatabase(DATABASE_PATH)
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 MAX_PLANNER_BYTES = 128 * 1024
+MAX_PAYSTUB_IMPORT_BYTES = 4 * 1024 * 1024
 DEFAULT_PLANNER = {
     "allocations": {
         "mode": "percent",
@@ -288,6 +289,23 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
             except ValueError as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)})
             return
+        if request_path == "/api/paystubs/import":
+            session = self._require_user(csrf=True)
+            if not session:
+                return
+            try:
+                payload = self._read_json_body(MAX_PAYSTUB_IMPORT_BYTES)
+                if not isinstance(payload, dict) or not isinstance(payload.get("records"), list):
+                    raise ValueError("Payroll import data must contain a records list.")
+                result = DATABASE.add_paystub_records(
+                    int(session[0]["id"]), payload["records"]
+                )
+                self._send_json(HTTPStatus.OK, result)
+            except ValueError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)}
+                )
+            return
         if request_path != "/api/ingest":
             self._send_json(HTTPStatus.NOT_FOUND, {"status": "error", "message": "Not found."})
             return
@@ -502,7 +520,7 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
             return filename, payload
         raise ValueError("No PDF file was included in the upload.")
 
-    def _read_json_body(self) -> object:
+    def _read_json_body(self, maximum_bytes: int = MAX_PLANNER_BYTES) -> object:
         if "application/json" not in self.headers.get("Content-Type", "").lower():
             raise ValueError("JSON requests must use application/json.")
         try:
@@ -511,8 +529,13 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
             raise ValueError("Invalid JSON request size.") from exc
         if content_length <= 0:
             raise ValueError("JSON request data is empty.")
-        if content_length > MAX_PLANNER_BYTES:
-            raise ValueError("JSON request data exceeds the 128 KB limit.")
+        if content_length > maximum_bytes:
+            limit = (
+                f"{maximum_bytes // (1024 * 1024)} MB"
+                if maximum_bytes >= 1024 * 1024
+                else f"{maximum_bytes // 1024} KB"
+            )
+            raise ValueError(f"JSON request data exceeds the {limit} limit.")
         try:
             return json.loads(self.rfile.read(content_length).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:

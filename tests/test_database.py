@@ -98,6 +98,22 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(len(self.database.list_paystubs(first["id"])), 1)
         self.assertEqual(len(self.database.list_paystubs(second["id"])), 1)
 
+    def test_imported_paystub_records_survive_database_reopen(self):
+        user = self.database.register_user("payrolluser", "persistent secure password")
+        result = self.database.add_paystub_records(
+            user["id"], [sample_record(), sample_record()]
+        )
+
+        reopened = PayPulseDatabase(self.database.path)
+        reopened.initialize()
+        stored = reopened.list_paystubs(user["id"])
+
+        self.assertEqual(result["added"], 1)
+        self.assertEqual(result["duplicates"], 1)
+        self.assertEqual(result["total_records"], 1)
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["overtime_hours"], 0.8)
+
     def test_last_active_admin_cannot_be_removed(self):
         admin = self.database.register_user("owner", "correct horse battery staple")
         with self.assertRaisesRegex(ValueError, "administrator"):
