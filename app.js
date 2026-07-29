@@ -54,6 +54,20 @@ const TABLE_EXPORT_FIELDS = [
   ["total_deductions", "Deductions"],
   ["net_pay", "Net Pay"],
 ];
+const CSV_HEADER_ALIASES = new Map(
+  TABLE_EXPORT_FIELDS.map(([field, label]) => [label.toLowerCase(), field]),
+);
+
+function normalizeCSVHeader(header) {
+  const cleaned = String(header).replace(/^\uFEFF/, "").trim();
+  return (
+    CSV_HEADER_ALIASES.get(cleaned.toLowerCase()) ||
+    cleaned
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+  );
+}
 
 const palette = {
   navy: "#245276",
@@ -166,7 +180,7 @@ function parseCSV(text) {
     rows.push(row);
   }
 
-  const headers = rows.shift()?.map((header) => header.trim()) ?? [];
+  const headers = rows.shift()?.map(normalizeCSVHeader) ?? [];
   return rows.map((values) => {
     const record = {};
     headers.forEach((header, index) => {
@@ -231,6 +245,14 @@ function validateRows(rows) {
   if (missing.length) {
     throw new Error(`Missing required CSV columns: ${missing.join(", ")}`);
   }
+  rows.forEach((row, index) => {
+    if (!row.pay_date) throw new Error(`Payroll row ${index + 1} is missing a pay date.`);
+    for (const field of NUMERIC_FIELDS) {
+      if (field in row && !Number.isFinite(row[field])) {
+        throw new Error(`Payroll row ${index + 1} has an invalid ${field.replaceAll("_", " ")}.`);
+      }
+    }
+  });
 }
 
 function configureChartDefaults() {
@@ -2240,8 +2262,14 @@ async function importPaystubCSV(file) {
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ records: rows }),
   });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.message || "The payroll CSV could not be imported.");
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const fallback =
+      response.status === 404
+        ? "CSV persistence is unavailable on the running server. Restart PayPulse and try again."
+        : "The payroll CSV could not be imported.";
+    throw new Error(payload.message || fallback);
+  }
 
   await loadPaystubsFromServer();
   const addedLabel = `${payload.added} statement${payload.added === 1 ? "" : "s"} saved`;
@@ -2660,6 +2688,8 @@ if (typeof module !== "undefined" && module.exports) {
     monthlyPayPeriods,
     monthlyExpenseAmount,
     normalizeExpenseAmount,
+    normalizeCSVHeader,
+    parseCSV,
     projectedPayDates,
     projectedPayDatesForMonth,
     reorderExpenses,

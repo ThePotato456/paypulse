@@ -173,7 +173,12 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
     def end_headers(self) -> None:
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        if self.path.startswith("/api/") or self.path.endswith("paystubs.csv"):
+        request_path = urlparse(self.path).path
+        if (
+            request_path.startswith("/api/")
+            or request_path == "/"
+            or Path(request_path).suffix.lower() in {".html", ".js", ".css", ".csv"}
+        ):
             self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
@@ -188,6 +193,7 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
                     "planner_persistence": True,
                     "authentication": True,
                     "database": True,
+                    "payroll_import": True,
                 },
             )
             return
