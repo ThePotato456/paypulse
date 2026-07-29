@@ -180,6 +180,8 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
             or Path(request_path).suffix.lower() in {".html", ".js", ".css", ".csv"}
         ):
             self.send_header("Cache-Control", "no-store")
+            self.send_header("CDN-Cache-Control", "no-store")
+            self.send_header("Cloudflare-CDN-Cache-Control", "no-store")
         super().end_headers()
 
     def do_GET(self) -> None:
