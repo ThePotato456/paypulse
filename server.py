@@ -1,14 +1,15 @@
-"""Self-hosted PayPulse server with static files and local paystub ingestion."""
+"""Self-hosted PayPulse server with SQLite accounts and payroll storage."""
 
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 import re
 import tempfile
-import threading
 import uuid
+from http.cookies import SimpleCookie
 from email.parser import BytesParser
 from email.policy import default
 from http import HTTPStatus
@@ -16,16 +17,17 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from ingestion import IngestionError, append_statements, parse_pdf
+from database import PayPulseDatabase, SESSION_SECONDS, load_legacy_paystubs
+from ingestion import IngestionError, parse_pdf
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
 CSV_PATH = PROJECT_DIR / "data" / "paystubs.csv"
 PLANNER_PATH = PROJECT_DIR / "data" / "planner.json"
+DATABASE_PATH = PROJECT_DIR / "data" / "paypulse.db"
+DATABASE = PayPulseDatabase(DATABASE_PATH)
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 MAX_PLANNER_BYTES = 128 * 1024
-CSV_WRITE_LOCK = threading.Lock()
-PLANNER_WRITE_LOCK = threading.Lock()
 DEFAULT_PLANNER = {
     "allocations": {
         "mode": "percent",
@@ -183,24 +185,52 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
                     "status": "ok",
                     "ingestion": True,
                     "planner_persistence": True,
-                    "csv_exists": CSV_PATH.exists(),
+                    "authentication": True,
+                    "database": True,
                 },
             )
             return
+        if request_path == "/api/auth/session":
+            session = self._current_session()
+            self._send_json(
+                HTTPStatus.OK,
+                {
+                    "status": "ok",
+                    "authenticated": bool(session),
+                    "user": session[0] if session else None,
+                    "csrf_token": session[1] if session else None,
+                },
+            )
+            return
+        if request_path == "/api/paystubs":
+            session = self._require_user()
+            if not session:
+                return
+            self._send_json(
+                HTTPStatus.OK,
+                {"status": "ok", "paystubs": DATABASE.list_paystubs(int(session[0]["id"]))},
+            )
+            return
         if request_path == "/api/planner":
-            try:
-                with PLANNER_WRITE_LOCK:
-                    persisted = PLANNER_PATH.exists()
-                    planner = load_planner(PLANNER_PATH)
-                self._send_json(
-                    HTTPStatus.OK,
-                    {"status": "ok", "persisted": persisted, "planner": planner},
-                )
-            except ValueError as exc:
-                self._send_json(
-                    HTTPStatus.INTERNAL_SERVER_ERROR,
-                    {"status": "error", "message": str(exc)},
-                )
+            session = self._require_user()
+            if not session:
+                return
+            persisted, planner = DATABASE.get_planner(
+                int(session[0]["id"]), normalize_planner(DEFAULT_PLANNER)
+            )
+            self._send_json(
+                HTTPStatus.OK,
+                {"status": "ok", "persisted": persisted, "planner": planner},
+            )
+            return
+        if request_path == "/api/users":
+            session = self._require_user(admin=True)
+            if not session:
+                return
+            self._send_json(HTTPStatus.OK, {"status": "ok", "users": DATABASE.list_users()})
+            return
+        if request_path.startswith("/data/"):
+            self._send_json(HTTPStatus.NOT_FOUND, {"status": "error", "message": "Not found."})
             return
         super().do_GET()
 
@@ -208,10 +238,13 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
         if urlparse(self.path).path != "/api/planner":
             self._send_json(HTTPStatus.NOT_FOUND, {"status": "error", "message": "Not found."})
             return
+        session = self._require_user(csrf=True)
+        if not session:
+            return
         try:
             payload = self._read_json_body()
-            with PLANNER_WRITE_LOCK:
-                planner = save_planner(payload, PLANNER_PATH)
+            planner = normalize_planner(payload)
+            DATABASE.set_planner(int(session[0]["id"]), planner)
             self._send_json(HTTPStatus.OK, {"status": "ok", "planner": planner})
         except ValueError as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)})
@@ -222,8 +255,45 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
             )
 
     def do_POST(self) -> None:
-        if urlparse(self.path).path != "/api/ingest":
+        request_path = urlparse(self.path).path
+        if request_path == "/api/auth/register":
+            self._register()
+            return
+        if request_path == "/api/auth/login":
+            self._login()
+            return
+        if request_path == "/api/auth/logout":
+            session = self._require_user(csrf=True)
+            if not session:
+                return
+            DATABASE.delete_session(self._session_token())
+            self._send_json(
+                HTTPStatus.OK,
+                {"status": "ok"},
+                cookie="paypulse_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
+            )
+            return
+        if request_path == "/api/users":
+            session = self._require_user(admin=True, csrf=True)
+            if not session:
+                return
+            try:
+                payload = self._read_json_body()
+                if not isinstance(payload, dict):
+                    raise ValueError("User data must be a JSON object.")
+                user = DATABASE.register_user(
+                    payload.get("username"), payload.get("password"), role=str(payload.get("role", "member"))
+                )
+                self._send_json(HTTPStatus.CREATED, {"status": "ok", "user": user})
+            except ValueError as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)})
+            return
+        if request_path != "/api/ingest":
             self._send_json(HTTPStatus.NOT_FOUND, {"status": "error", "message": "Not found."})
+            return
+
+        session = self._require_user(csrf=True)
+        if not session:
             return
 
         try:
@@ -233,8 +303,7 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
                 temporary_path = Path(temporary.name)
             try:
                 statements = parse_pdf(temporary_path)
-                with CSV_WRITE_LOCK:
-                    result = append_statements(CSV_PATH, statements)
+                result = DATABASE.add_statements(int(session[0]["id"]), statements)
             finally:
                 temporary_path.unlink(missing_ok=True)
 
@@ -255,9 +324,150 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
                 HTTPStatus.INTERNAL_SERVER_ERROR,
                 {
                     "status": "error",
-                    "message": "The paystub could not be processed. No CSV changes were made.",
+                    "message": "The paystub could not be processed. No database changes were made.",
                 },
             )
+
+    def do_PATCH(self) -> None:
+        match = re.fullmatch(r"/api/users/(\d+)", urlparse(self.path).path)
+        if not match:
+            self._send_json(HTTPStatus.NOT_FOUND, {"status": "error", "message": "Not found."})
+            return
+        session = self._require_user(admin=True, csrf=True)
+        if not session:
+            return
+        try:
+            payload = self._read_json_body()
+            if not isinstance(payload, dict):
+                raise ValueError("User data must be a JSON object.")
+            target_id = int(match.group(1))
+            if target_id == int(session[0]["id"]) and payload.get("active") is False:
+                raise ValueError("You cannot deactivate your current account.")
+            user = DATABASE.update_user(
+                target_id,
+                role=payload.get("role"),
+                active=payload.get("active"),
+            )
+            self._send_json(HTTPStatus.OK, {"status": "ok", "user": user})
+        except LookupError as exc:
+            self._send_json(HTTPStatus.NOT_FOUND, {"status": "error", "message": str(exc)})
+        except ValueError as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)})
+
+    def do_DELETE(self) -> None:
+        match = re.fullmatch(r"/api/users/(\d+)", urlparse(self.path).path)
+        if not match:
+            self._send_json(HTTPStatus.NOT_FOUND, {"status": "error", "message": "Not found."})
+            return
+        session = self._require_user(admin=True, csrf=True)
+        if not session:
+            return
+        target_id = int(match.group(1))
+        if target_id == int(session[0]["id"]):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"status": "error", "message": "You cannot delete your current account."},
+            )
+            return
+        try:
+            DATABASE.delete_user(target_id)
+            self._send_json(HTTPStatus.OK, {"status": "ok"})
+        except LookupError as exc:
+            self._send_json(HTTPStatus.NOT_FOUND, {"status": "error", "message": str(exc)})
+        except ValueError as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)})
+
+    def _register(self) -> None:
+        try:
+            payload = self._read_json_body()
+            if not isinstance(payload, dict):
+                raise ValueError("Registration data must be a JSON object.")
+            first_account = not DATABASE.has_users()
+            legacy_planner = (
+                load_planner(PLANNER_PATH) if first_account and PLANNER_PATH.exists() else None
+            )
+            legacy_paystubs = load_legacy_paystubs(CSV_PATH) if first_account else None
+            user = DATABASE.register_user(
+                payload.get("username"),
+                payload.get("password"),
+                legacy_planner=legacy_planner,
+                legacy_paystubs=legacy_paystubs,
+            )
+            token, csrf_token = DATABASE.create_session(int(user["id"]))
+            self._send_json(
+                HTTPStatus.CREATED,
+                {"status": "ok", "user": user, "csrf_token": csrf_token},
+                cookie=self._session_cookie(token),
+            )
+        except ValueError as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)})
+
+    def _login(self) -> None:
+        try:
+            payload = self._read_json_body()
+            if not isinstance(payload, dict):
+                raise ValueError("Login data must be a JSON object.")
+            user = DATABASE.authenticate(payload.get("username"), payload.get("password"))
+            if not user:
+                self._send_json(
+                    HTTPStatus.UNAUTHORIZED,
+                    {"status": "error", "message": "Username or password is incorrect."},
+                )
+                return
+            token, csrf_token = DATABASE.create_session(int(user["id"]))
+            self._send_json(
+                HTTPStatus.OK,
+                {"status": "ok", "user": user, "csrf_token": csrf_token},
+                cookie=self._session_cookie(token),
+            )
+        except ValueError as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)})
+
+    def _session_token(self) -> str | None:
+        cookie = SimpleCookie()
+        try:
+            cookie.load(self.headers.get("Cookie", ""))
+        except Exception:
+            return None
+        morsel = cookie.get("paypulse_session")
+        return morsel.value if morsel else None
+
+    def _current_session(self) -> tuple[dict[str, object], str] | None:
+        return DATABASE.session_user(self._session_token())
+
+    def _require_user(
+        self, *, admin: bool = False, csrf: bool = False
+    ) -> tuple[dict[str, object], str] | None:
+        session = self._current_session()
+        if not session:
+            self._send_json(
+                HTTPStatus.UNAUTHORIZED,
+                {"status": "error", "message": "Sign in to continue."},
+            )
+            return None
+        user, csrf_token = session
+        if admin and user["role"] != "admin":
+            self._send_json(
+                HTTPStatus.FORBIDDEN,
+                {"status": "error", "message": "Administrator access is required."},
+            )
+            return None
+        if csrf and not hmac.compare_digest(
+            self.headers.get("X-CSRF-Token", ""), csrf_token
+        ):
+            self._send_json(
+                HTTPStatus.FORBIDDEN,
+                {"status": "error", "message": "Security token is missing or invalid."},
+            )
+            return None
+        return session
+
+    @staticmethod
+    def _session_cookie(token: str) -> str:
+        return (
+            f"paypulse_session={token}; Path=/; HttpOnly; SameSite=Lax; "
+            f"Max-Age={SESSION_SECONDS}"
+        )
 
     def _read_pdf_upload(self) -> tuple[str, bytes]:
         content_type = self.headers.get("Content-Type", "")
@@ -294,25 +504,29 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
 
     def _read_json_body(self) -> object:
         if "application/json" not in self.headers.get("Content-Type", "").lower():
-            raise ValueError("Planner updates must use application/json.")
+            raise ValueError("JSON requests must use application/json.")
         try:
             content_length = int(self.headers.get("Content-Length", "0"))
         except ValueError as exc:
-            raise ValueError("Invalid planner request size.") from exc
+            raise ValueError("Invalid JSON request size.") from exc
         if content_length <= 0:
-            raise ValueError("Planner data is empty.")
+            raise ValueError("JSON request data is empty.")
         if content_length > MAX_PLANNER_BYTES:
-            raise ValueError("Planner data exceeds the 128 KB limit.")
+            raise ValueError("JSON request data exceeds the 128 KB limit.")
         try:
             return json.loads(self.rfile.read(content_length).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ValueError("Planner data must be valid UTF-8 JSON.") from exc
+            raise ValueError("Request data must be valid UTF-8 JSON.") from exc
 
-    def _send_json(self, status: HTTPStatus, payload: dict[str, object]) -> None:
+    def _send_json(
+        self, status: HTTPStatus, payload: dict[str, object], *, cookie: str | None = None
+    ) -> None:
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status.value)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(body)
 
@@ -334,19 +548,28 @@ def main() -> None:
         "--csv",
         type=Path,
         default=PROJECT_DIR / "data" / "paystubs.csv",
-        help="Pay-history CSV path",
+        help="Legacy pay-history CSV imported into the first account",
     )
     parser.add_argument(
         "--planner",
         type=Path,
         default=PROJECT_DIR / "data" / "planner.json",
-        help="Persistent planner JSON path",
+        help="Legacy planner JSON imported into the first account",
+    )
+    parser.add_argument(
+        "--database",
+        type=Path,
+        default=PROJECT_DIR / "data" / "paypulse.db",
+        help="SQLite database path",
     )
     arguments = parser.parse_args()
 
-    global CSV_PATH, PLANNER_PATH
+    global CSV_PATH, PLANNER_PATH, DATABASE_PATH, DATABASE
     CSV_PATH = arguments.csv.resolve()
     PLANNER_PATH = arguments.planner.resolve()
+    DATABASE_PATH = arguments.database.resolve()
+    DATABASE = PayPulseDatabase(DATABASE_PATH)
+    DATABASE.initialize()
     host = arguments.host
     port = arguments.port
     server = ThreadingHTTPServer((host, port), PayPulseHandler)

@@ -14,8 +14,57 @@
     />
     <link rel="stylesheet" href="styles.css" />
   </head>
-  <body>
+  <body class="auth-pending">
     <a class="skip-link" href="#dashboard">Skip to dashboard</a>
+
+    <section id="authGate" class="auth-gate" aria-labelledby="authTitle">
+      <div class="auth-card">
+        <div class="auth-brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32"><path d="M5 23V13m7 10V8m7 15V16m7 7V5" /></svg>
+          </span>
+          <div><strong>PayPulse</strong><span>Private payroll intelligence</span></div>
+        </div>
+        <div class="auth-heading">
+          <p class="panel-kicker">SECURE ACCESS</p>
+          <h1 id="authTitle">Your pay stays yours.</h1>
+          <p>Sign in to your private workspace or create a local account.</p>
+        </div>
+        <div class="auth-tabs" role="tablist" aria-label="Account access">
+          <button id="loginTab" class="active" type="button" role="tab" aria-selected="true" aria-controls="loginForm">Sign in</button>
+          <button id="registerTab" type="button" role="tab" aria-selected="false" aria-controls="registerForm">Register</button>
+        </div>
+        <form id="loginForm" class="auth-form" aria-label="Sign in">
+          <div class="field">
+            <label for="loginUsername">Username</label>
+            <input id="loginUsername" type="text" autocomplete="username" required />
+          </div>
+          <div class="field">
+            <label for="loginPassword">Password</label>
+            <input id="loginPassword" type="password" autocomplete="current-password" required />
+          </div>
+          <button class="button button-primary" type="submit">Sign in</button>
+        </form>
+        <form id="registerForm" class="auth-form" aria-label="Register" hidden>
+          <div class="field">
+            <label for="registerUsername">Username</label>
+            <input id="registerUsername" type="text" minlength="3" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9_.-]{2,31}" autocomplete="username" required />
+          </div>
+          <div class="field">
+            <label for="registerPassword">Password</label>
+            <input id="registerPassword" type="password" minlength="10" maxlength="128" autocomplete="new-password" required />
+          </div>
+          <div class="field">
+            <label for="registerConfirm">Confirm password</label>
+            <input id="registerConfirm" type="password" minlength="10" maxlength="128" autocomplete="new-password" required />
+          </div>
+          <button class="button button-primary" type="submit">Create account</button>
+          <p class="auth-first-user-note">The first registered account becomes the administrator and receives existing local data.</p>
+        </form>
+        <p id="authMessage" class="auth-message" role="status" aria-live="polite"></p>
+        <p class="auth-security-note">Passwords are salted and hashed. Sessions are stored locally in SQLite.</p>
+      </div>
+    </section>
 
     <header class="site-header">
       <div class="shell header-inner">
@@ -36,6 +85,7 @@
             <span class="status-dot" aria-hidden="true"></span>
             Private browser analysis
           </span>
+          <span id="accountChip" class="account-chip"><strong id="accountUsername">—</strong><small id="accountRole">member</small></span>
           <button id="ingestButton" class="button button-primary" type="button">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v5h14v-5" />
@@ -49,6 +99,7 @@
             Load CSV
           </label>
           <input id="csvUpload" type="file" accept=".csv,text/csv" hidden />
+          <button id="logoutButton" class="account-logout" type="button">Sign out</button>
         </div>
       </div>
     </header>
@@ -482,7 +533,7 @@
             <div id="allocationStatus" class="allocation-status" aria-live="polite">100% allocated</div>
           </article>
 
-          <article class="panel tool-card records-card expenses-card">
+          <article id="expenses" class="panel tool-card records-card expenses-card">
             <div class="records-card-header">
               <div class="tool-card-header">
                 <span class="tool-icon tool-icon-expense" aria-hidden="true">
@@ -495,7 +546,7 @@
                   <h3>Track recurring expenses</h3>
                 </div>
               </div>
-              <p>Add weekly, biweekly, monthly, annual, or one-time costs and compare them with expected take-home pay.</p>
+              <p>Build a calendar-month budget using fixed increments. Double-click or tap any field to edit, then drag or use the arrows to reorder.</p>
             </div>
 
             <form id="expenseForm" class="records-form">
@@ -511,6 +562,7 @@
                   <option>Food</option>
                   <option>Transportation</option>
                   <option>Health</option>
+                  <option>Savings</option>
                   <option>Debt</option>
                   <option>Entertainment</option>
                   <option selected>Other</option>
@@ -534,10 +586,22 @@
             </form>
 
             <div class="expense-summary" aria-live="polite">
-              <div><span>Recurring monthly</span><strong id="expenseMonthlyTotal">—</strong></div>
-              <div><span>Needed per paycheck</span><strong id="expensePerPaycheck">—</strong></div>
-              <div><span>Take-home after expenses</span><strong id="expenseRemaining">—</strong></div>
-              <div><span>Income committed</span><strong id="expenseRatio">—</strong></div>
+              <section class="expense-summary-group" aria-labelledby="monthlyBudgetHeading">
+                <h4 id="monthlyBudgetHeading">Monthly budget</h4>
+                <div class="expense-summary-metrics">
+                  <div><span>Estimated take-home</span><strong id="expenseMonthlyIncome">—</strong></div>
+                  <div><span>Recurring expenses</span><strong id="expenseMonthlyTotal">—</strong></div>
+                  <div><span>Income committed</span><strong id="expenseRatio">—</strong></div>
+                </div>
+              </section>
+              <section class="expense-summary-group" aria-labelledby="paycheckBudgetHeading">
+                <h4 id="paycheckBudgetHeading">Per paycheck</h4>
+                <div class="expense-summary-metrics expense-paycheck-equation">
+                  <div><span>Estimated take-home</span><strong id="expenseHypotheticalPaycheck">—</strong></div>
+                  <div class="expense-reserve"><span id="expensePerPaycheckLabel">Expenses to reserve</span><strong id="expensePerPaycheck">—</strong></div>
+                  <div class="expense-available"><span>Available afterward</span><strong id="expenseRemaining">—</strong></div>
+                </div>
+              </section>
             </div>
 
             <div class="tool-table-scroll">
@@ -590,8 +654,41 @@
                 <div class="input-prefix"><span>$</span><input id="goalSaved" type="number" min="0" step="0.01" inputmode="decimal" value="0" required /></div>
               </div>
               <div class="field">
-                <label for="goalDate">Target date</label>
-                <input id="goalDate" type="date" required />
+                <label for="goalDateButton">Target date</label>
+                <div id="goalDatePicker" class="goal-date-picker">
+                  <input id="goalDate" type="hidden" />
+                  <button
+                    id="goalDateButton"
+                    class="goal-date-trigger"
+                    type="button"
+                    aria-haspopup="dialog"
+                    aria-expanded="false"
+                  >
+                    <span id="goalDateDisplay">mm/dd/yyyy</span>
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <rect x="3" y="5" width="18" height="16" rx="2"></rect>
+                      <path d="M16 3v4M8 3v4M3 10h18"></path>
+                    </svg>
+                  </button>
+                  <div
+                    id="goalDatePopover"
+                    class="goal-calendar-popover"
+                    role="dialog"
+                    aria-label="Choose a target date"
+                    hidden
+                  >
+                    <div class="goal-calendar-header">
+                      <button id="goalCalendarPrevious" type="button" aria-label="Previous month">&#8592;</button>
+                      <strong id="goalCalendarMonth" aria-live="polite"></strong>
+                      <button id="goalCalendarNext" type="button" aria-label="Next month">&#8594;</button>
+                    </div>
+                    <div class="goal-calendar-weekdays" aria-hidden="true">
+                      <span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span>
+                    </div>
+                    <div id="goalCalendarGrid" class="goal-calendar-grid" role="grid"></div>
+                    <div class="goal-calendar-legend"><i aria-hidden="true"></i> Projected payday</div>
+                  </div>
+                </div>
               </div>
               <button id="goalSubmit" class="button button-primary records-submit" type="submit">Add goal</button>
               <button id="goalCancelEdit" class="text-button records-cancel" type="button" hidden>Cancel edit</button>
@@ -601,6 +698,8 @@
               <span><strong id="goalsCount">0</strong> active goals</span>
               <span><strong id="goalsSavedTotal">—</strong> saved</span>
               <span><strong id="goalsRemainingTotal">—</strong> remaining</span>
+              <span><strong id="goalsPerPaycheckTotal">—</strong> total per paycheck</span>
+              <button id="addGoalsToExpenses" class="goal-expense-button" type="button">Add to expenses</button>
             </div>
 
             <div class="tool-table-scroll">
@@ -621,6 +720,39 @@
             </div>
           </article>
         </div>
+
+        <article id="userManagementPanel" class="panel records-card user-management-card" hidden>
+          <div class="records-card-header">
+            <div class="tool-card-header">
+              <span class="tool-icon tool-icon-admin" aria-hidden="true">
+                <svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3"></circle><path d="M3.5 19c.5-4 2.3-6 5.5-6s5 2 5.5 6M17 8v6m-3-3h6"></path></svg>
+              </span>
+              <div><p class="panel-kicker">ADMINISTRATION</p><h3>User management</h3></div>
+            </div>
+            <p>Create local accounts, assign administrators, deactivate access, and review each user’s stored pay statements.</p>
+          </div>
+          <form id="adminUserForm" class="records-form admin-user-form">
+            <div class="field field-name">
+              <label for="adminUsername">Username</label>
+              <input id="adminUsername" type="text" minlength="3" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9_.-]{2,31}" autocomplete="off" required />
+            </div>
+            <div class="field field-name">
+              <label for="adminPassword">Temporary password</label>
+              <input id="adminPassword" type="password" minlength="10" maxlength="128" autocomplete="new-password" required />
+            </div>
+            <div class="field">
+              <label for="adminRole">Role</label>
+              <select id="adminRole"><option value="member">Member</option><option value="admin">Administrator</option></select>
+            </div>
+            <button class="button button-primary records-submit" type="submit">Add user</button>
+          </form>
+          <div class="tool-table-scroll">
+            <table class="tool-table users-table">
+              <thead><tr><th>User</th><th>Role</th><th>Status</th><th class="number">Pay statements</th><th>Created</th><th><span class="sr-only">Actions</span></th></tr></thead>
+              <tbody id="usersTableBody"></tbody>
+            </table>
+          </div>
+        </article>
 
       </section>
 
@@ -647,11 +779,13 @@
                 <th>Pay period</th>
                 <th><button type="button" data-sort="payment_type">Pay type <span>↕</span></button></th>
                 <th class="number"><button type="button" data-sort="hours_units">Hours <span>↕</span></button></th>
+                <th class="number"><button type="button" data-sort="overtime_hours">OT hours <span>↕</span></button></th>
                 <th class="number"><button type="button" data-sort="regular_rate">Rate <span>↕</span></button></th>
                 <th class="number"><button type="button" data-sort="gross_pay">Gross <span>↕</span></button></th>
                 <th class="number"><button type="button" data-sort="total_taxes">Taxes <span>↕</span></button></th>
                 <th class="number"><button type="button" data-sort="total_deductions">Deductions <span>↕</span></button></th>
                 <th class="number"><button type="button" data-sort="net_pay">Net pay <span>↕</span></button></th>
+                <th><span class="sr-only">Tools action</span></th>
               </tr>
             </thead>
             <tbody id="payTableBody"></tbody>

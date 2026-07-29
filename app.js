@@ -1,7 +1,7 @@
 "use strict";
 
-const DATA_URL = "data/paystubs.csv";
 const PLANNER_STORAGE_KEY = "paypulse-planner-v1";
+const GOAL_EXPENSE_ID = "expense-savings-goals";
 const DEFAULT_ALLOCATIONS = {
   needs: 50,
   savings: 20,
@@ -85,8 +85,14 @@ const state = {
   allocationMode: "percent",
   allocations: { ...DEFAULT_ALLOCATIONS },
   expenses: [],
+  expenseDraggingId: null,
   goals: [],
   goalEditingId: null,
+  goalCalendarMonth: null,
+  authUser: null,
+  csrfToken: "",
+  appStarted: false,
+  users: [],
   charts: {},
 };
 
@@ -117,6 +123,14 @@ const shortDateFormatter = new Intl.DateTimeFormat("en-US", {
   day: "numeric",
   year: "2-digit",
 });
+
+function plannerStorageKey() {
+  return state.authUser ? `${PLANNER_STORAGE_KEY}-user-${state.authUser.id}` : PLANNER_STORAGE_KEY;
+}
+
+function authHeaders(headers = {}) {
+  return state.csrfToken ? { ...headers, "X-CSRF-Token": state.csrfToken } : headers;
+}
 
 function parseCSV(text) {
   const rows = [];
@@ -419,7 +433,6 @@ function applyPlannerData(planner) {
   Object.entries(state.allocations).forEach(([key, value]) => {
     el(`allocation${key[0].toUpperCase()}${key.slice(1)}`).value = value;
   });
-  el("goalDate").min = toIsoDate(new Date());
 }
 
 function migrateLocalPlanner(stored) {
@@ -449,7 +462,7 @@ function migrateLocalPlanner(stored) {
 async function persistPlanner(immediate = false) {
   const payload = plannerPayload();
   try {
-    localStorage.setItem(PLANNER_STORAGE_KEY, JSON.stringify(payload));
+    localStorage.setItem(plannerStorageKey(), JSON.stringify(payload));
   } catch {
     // Server persistence remains available when browser storage is disabled.
   }
@@ -464,7 +477,7 @@ async function persistPlanner(immediate = false) {
     try {
       const response = await fetch("/api/planner", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(payload),
       });
       const result = await response.json();
@@ -492,8 +505,11 @@ async function persistPlanner(immediate = false) {
 async function loadPlannerState() {
   let localPlanner = null;
   try {
+    const storedPlanner =
+      localStorage.getItem(plannerStorageKey()) ||
+      (state.authUser?.id === 1 ? localStorage.getItem(PLANNER_STORAGE_KEY) : null);
     localPlanner = migrateLocalPlanner(
-      JSON.parse(localStorage.getItem(PLANNER_STORAGE_KEY) || "null"),
+      JSON.parse(storedPlanner || "null"),
     );
   } catch {
     localPlanner = null;
@@ -511,7 +527,7 @@ async function loadPlannerState() {
     } else {
       applyPlannerData(result.planner);
       try {
-        localStorage.setItem(PLANNER_STORAGE_KEY, JSON.stringify(result.planner));
+        localStorage.setItem(plannerStorageKey(), JSON.stringify(result.planner));
       } catch {
         // The server remains the source of truth.
       }
@@ -565,7 +581,52 @@ function renderCalculator() {
   el("calcNet").textContent = currency.format(net);
   el("calcTakeHome").textContent = gross ? percent.format(net / gross) : "—";
   renderAllocation();
-  renderExpenses(state.filteredRows.length ? state.filteredRows : state.allRows);
+  renderExpenses();
+}
+
+function calculatorInputsForPayStatement(row) {
+  const gross = Math.max(0, Number(row.gross_pay) || 0);
+  const rate = Math.max(0, Number(row.regular_rate) || 0);
+  const overtime = Math.max(0, Number(row.overtime_hours) || 0);
+  const regularHours = Math.max(
+    0,
+    Number(row.regular_hours) || (Number(row.hours_units) || 0) - overtime,
+  );
+  const calculatedBase = rate * regularHours + rate * 1.5 * overtime;
+
+  return {
+    rate,
+    regularHours,
+    overtime,
+    bonus: Math.max(0, gross - calculatedBase),
+    taxRate: gross ? (Math.max(0, Number(row.total_taxes) || 0) / gross) * 100 : 0,
+    deductionRate: gross ? (Math.max(0, Number(row.total_deductions) || 0) / gross) * 100 : 0,
+  };
+}
+
+function loadPayStatementIntoTools(row) {
+  const inputs = calculatorInputsForPayStatement(row);
+  el("calcRate").value = inputs.rate.toFixed(2);
+  el("calcHours").value = inputs.regularHours.toFixed(2);
+  el("calcOvertime").value = inputs.overtime.toFixed(2);
+  el("calcBonus").value = inputs.bonus.toFixed(2);
+  el("calcTaxRate").value = inputs.taxRate.toFixed(2);
+  el("calcDeductionRate").value = inputs.deductionRate.toFixed(2);
+  state.calculatorDirty = true;
+  renderCalculator();
+  const gross = Math.max(0, Number(row.gross_pay) || 0);
+  const taxes = Math.max(0, Number(row.total_taxes) || 0);
+  const deductions = Math.max(0, Number(row.total_deductions) || 0);
+  state.calculatorNet = Math.max(0, Number(row.net_pay) || gross - taxes - deductions);
+  el("calcGross").textContent = currency.format(gross);
+  el("calcTaxes").textContent = currency.format(taxes);
+  el("calcDeductions").textContent = currency.format(deductions);
+  el("calcNet").textContent = currency.format(state.calculatorNet);
+  el("calcTakeHome").textContent = gross ? percent.format(state.calculatorNet / gross) : "—";
+  renderAllocation();
+  renderExpenses();
+  activateView("planning", "expenses");
+  showToast(`Paycheck from ${formatDate(row.pay_date)} loaded into Tools.`);
 }
 
 function renderAllocation() {
@@ -614,15 +675,78 @@ function renderAllocation() {
   }
 }
 
-function monthlyExpenseAmount(expense) {
-  const amount = Number(expense.amount) || 0;
+function monthlyExpenseFactor(frequency) {
   return {
-    weekly: (amount * 52) / 12,
-    biweekly: (amount * 26) / 12,
-    monthly: amount,
-    annual: amount / 12,
+    weekly: 4,
+    biweekly: 2,
+    monthly: 1,
+    annual: 1 / 12,
     "one-time": 0,
-  }[expense.frequency] ?? amount;
+  }[frequency] ?? 1;
+}
+
+function monthlyExpenseAmount(expense) {
+  return (Number(expense.amount) || 0) * monthlyExpenseFactor(expense.frequency);
+}
+
+function monthlyPayPeriods(cadenceDays) {
+  const cadence = Number(cadenceDays);
+  if (!Number.isFinite(cadence) || cadence <= 0) return 0;
+  return Math.max(1, Math.round(30 / cadence));
+}
+
+function expensePlan(expenses, paycheckNet, cadenceDays) {
+  const monthlyTotal = expenses.reduce(
+    (total, expense) => total + monthlyExpenseAmount(expense),
+    0,
+  );
+  const paychecksPerMonth = monthlyPayPeriods(cadenceDays);
+  const expensePerPaycheck = paychecksPerMonth ? monthlyTotal / paychecksPerMonth : 0;
+  const monthlyIncome = paycheckNet * paychecksPerMonth;
+
+  return {
+    monthlyTotal,
+    monthlyIncome,
+    paychecksPerMonth,
+    expensePerPaycheck,
+    remaining: paycheckNet - expensePerPaycheck,
+    incomeRatio: monthlyIncome ? monthlyTotal / monthlyIncome : 0,
+  };
+}
+
+function normalizeExpenseAmount(value) {
+  const amount = Number(value);
+  return Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) / 100 : null;
+}
+
+function expenseAmountFromMonthly(value, frequency) {
+  const monthlyAmount = normalizeExpenseAmount(value);
+  const factor = monthlyExpenseFactor(frequency);
+  return monthlyAmount !== null && factor > 0
+    ? Math.round((monthlyAmount / factor) * 100) / 100
+    : null;
+}
+
+function moveExpenseByOffset(expenses, expenseId, offset) {
+  const currentIndex = expenses.findIndex((expense) => expense.id === expenseId);
+  if (currentIndex < 0) return expenses;
+  const nextIndex = clamp(currentIndex + offset, 0, expenses.length - 1);
+  if (nextIndex === currentIndex) return expenses;
+  const reordered = [...expenses];
+  const [expense] = reordered.splice(currentIndex, 1);
+  reordered.splice(nextIndex, 0, expense);
+  return reordered;
+}
+
+function reorderExpenses(expenses, sourceId, targetId, placeAfter = false) {
+  if (sourceId === targetId) return expenses;
+  const sourceIndex = expenses.findIndex((expense) => expense.id === sourceId);
+  if (sourceIndex < 0 || !expenses.some((expense) => expense.id === targetId)) return expenses;
+  const reordered = [...expenses];
+  const [source] = reordered.splice(sourceIndex, 1);
+  const targetIndex = reordered.findIndex((expense) => expense.id === targetId);
+  reordered.splice(targetIndex + (placeAfter ? 1 : 0), 0, source);
+  return reordered;
 }
 
 function frequencyLabel(frequency) {
@@ -635,37 +759,49 @@ function frequencyLabel(frequency) {
   }[frequency] || frequency;
 }
 
-function renderExpenses(rows) {
-  const monthlyTotal = state.expenses.reduce(
-    (total, expense) => total + monthlyExpenseAmount(expense),
-    0,
-  );
-  const cadenceDays = estimateCadenceDays(rows);
-  const paychecksPerYear = 365 / cadenceDays;
-  const expensePerPaycheck = paychecksPerYear ? (monthlyTotal * 12) / paychecksPerYear : 0;
-  const monthlyIncome = paychecksPerYear ? (state.calculatorNet * paychecksPerYear) / 12 : 0;
-  const remaining = state.calculatorNet - expensePerPaycheck;
+function renderExpenses() {
+  const cadenceDays = estimateCadenceDays(state.allRows);
+  const { monthlyTotal, monthlyIncome, paychecksPerMonth, expensePerPaycheck, remaining, incomeRatio } =
+    expensePlan(state.expenses, state.calculatorNet, cadenceDays);
 
+  el("expenseMonthlyIncome").textContent = currency.format(monthlyIncome);
   el("expenseMonthlyTotal").textContent = currency.format(monthlyTotal);
   el("expensePerPaycheck").textContent = currency.format(expensePerPaycheck);
+  el("expensePerPaycheckLabel").textContent = paychecksPerMonth
+    ? `Expenses to reserve (${paychecksPerMonth} checks/month)`
+    : "Expenses to reserve";
+  el("expenseHypotheticalPaycheck").textContent = currency.format(state.calculatorNet);
   el("expenseRemaining").textContent = currency.format(remaining);
   el("expenseRemaining").classList.toggle("negative", remaining < 0);
-  el("expenseRatio").textContent = monthlyIncome
-    ? percent.format(monthlyTotal / monthlyIncome)
+  el("expenseRatio").textContent = paychecksPerMonth
+    ? percent.format(incomeRatio)
     : "—";
 
   el("expensesTableBody").innerHTML = state.expenses
-    .map((expense) => {
+    .map((expense, index) => {
       const monthly = monthlyExpenseAmount(expense);
+      const id = escapeHtml(expense.id);
+      const name = escapeHtml(expense.name);
+      const monthlyEditAttributes =
+        expense.frequency === "one-time"
+          ? ""
+          : `data-expense-id="${id}" data-edit-expense-field="monthly" tabindex="0" aria-label="Edit monthly budget for ${name}" title="Double-click to edit"`;
       return `
-        <tr>
-          <td><strong>${escapeHtml(expense.name)}</strong></td>
-          <td><span class="record-chip">${escapeHtml(expense.category)}</span></td>
-          <td>${escapeHtml(frequencyLabel(expense.frequency))}</td>
-          <td class="number">${currency.format(expense.amount)}</td>
-          <td class="number">${expense.frequency === "one-time" ? "—" : currency.format(monthly)}</td>
-          <td class="record-actions">
-            <button type="button" data-delete-expense="${escapeHtml(expense.id)}" aria-label="Delete ${escapeHtml(expense.name)}">Delete</button>
+        <tr data-expense-row="${id}">
+          <td class="expense-editable-cell" data-label="Expense" data-expense-id="${id}" data-edit-expense-field="name" tabindex="0" aria-label="Edit expense name for ${name}" title="Double-click or tap to edit">
+            <span class="expense-name-wrap">
+              <button type="button" class="expense-drag-handle" data-drag-expense="${id}" draggable="true" aria-label="Drag to reorder ${name}" title="Drag to reorder">⋮⋮</button>
+              <strong>${name}</strong>
+            </span>
+          </td>
+          <td class="expense-editable-cell" data-label="Category" data-expense-id="${id}" data-edit-expense-field="category" tabindex="0" aria-label="Edit category for ${name}" title="Double-click or tap to edit"><span class="record-chip">${escapeHtml(expense.category)}</span></td>
+          <td class="expense-editable-cell" data-label="Frequency" data-expense-id="${id}" data-edit-expense-field="frequency" tabindex="0" aria-label="Edit frequency for ${name}" title="Double-click or tap to edit">${escapeHtml(frequencyLabel(expense.frequency))}</td>
+          <td class="number expense-editable-cell" data-label="Amount" data-expense-id="${id}" data-edit-expense-field="amount" tabindex="0" aria-label="Edit amount for ${name}" title="Double-click or tap to edit">${currency.format(expense.amount)}</td>
+          <td class="number ${expense.frequency === "one-time" ? "" : "expense-editable-cell"}" data-label="Monthly" ${monthlyEditAttributes}>${expense.frequency === "one-time" ? "—" : currency.format(monthly)}</td>
+          <td class="record-actions" data-label="Reorder or delete">
+            <button type="button" data-move-expense="${id}" data-move-direction="-1" aria-label="Move ${name} up" ${index === 0 ? "disabled" : ""}>↑</button>
+            <button type="button" data-move-expense="${id}" data-move-direction="1" aria-label="Move ${name} down" ${index === state.expenses.length - 1 ? "disabled" : ""}>↓</button>
+            <button type="button" data-delete-expense="${id}" aria-label="Delete ${name}">Delete</button>
           </td>
         </tr>`;
     })
@@ -674,43 +810,218 @@ function renderExpenses(rows) {
   el("expensesTableBody").closest("table").hidden = state.expenses.length === 0;
 }
 
-function goalContribution(goal, rows) {
-  const remaining = Math.max(0, goal.target - goal.saved);
-  if (!remaining) return 0;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const daysRemaining = Math.max(
-    0,
-    Math.ceil((dateValue(goal.date) - today) / 86400000),
-  );
-  const paychecks = Math.max(0, Math.floor(daysRemaining / estimateCadenceDays(rows)));
-  return paychecks ? remaining / paychecks : remaining;
+function nextProjectedPayDate(rows, today = new Date()) {
+  if (!rows.length) return null;
+  const ordered = [...rows].sort((a, b) => a.pay_date.localeCompare(b.pay_date));
+  const cadenceDays = estimateCadenceDays(ordered);
+  const currentDate = new Date(today);
+  currentDate.setHours(0, 0, 0, 0);
+  const nextDate = dateValue(ordered.at(-1).pay_date);
+  nextDate.setDate(nextDate.getDate() + cadenceDays);
+  while (nextDate < currentDate) nextDate.setDate(nextDate.getDate() + cadenceDays);
+  return nextDate;
 }
 
-function renderGoals(rows) {
+function projectedPayDates(rows, targetDate, today = new Date()) {
+  const target = dateValue(targetDate);
+  const currentDate = new Date(today);
+  currentDate.setHours(0, 0, 0, 0);
+  if (Number.isNaN(target.valueOf()) || target < currentDate) return [];
+  const nextDate = nextProjectedPayDate(rows, currentDate);
+  if (!nextDate) return [];
+  const cadenceDays = estimateCadenceDays(rows);
+  const dates = [];
+  while (nextDate <= target) {
+    dates.push(toIsoDate(nextDate));
+    nextDate.setDate(nextDate.getDate() + cadenceDays);
+  }
+  return dates;
+}
+
+function projectedPayDatesForMonth(rows, monthDate, today = new Date()) {
+  const firstDay = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
+  const lastDay = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0);
+  return projectedPayDates(rows, toIsoDate(lastDay), today).filter((date) => {
+    const parsed = dateValue(date);
+    return parsed >= firstDay && parsed <= lastDay;
+  });
+}
+
+function updateGoalDateField(isoDate) {
+  el("goalDate").value = isoDate || "";
+  el("goalDateDisplay").textContent = isoDate ? formatDate(isoDate) : "mm/dd/yyyy";
+  el("goalDateButton").classList.toggle("has-value", Boolean(isoDate));
+}
+
+function renderGoalCalendar() {
+  const monthDate = state.goalCalendarMonth || new Date();
+  const year = monthDate.getFullYear();
+  const month = monthDate.getMonth();
+  const firstDay = new Date(year, month, 1);
+  const lastDay = new Date(year, month + 1, 0);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const selectedDate = el("goalDate").value;
+  const payDates = new Set(projectedPayDatesForMonth(state.allRows, monthDate, today));
+  const monthLabel = new Intl.DateTimeFormat("en-US", {
+    month: "long",
+    year: "numeric",
+  }).format(monthDate);
+  el("goalCalendarMonth").textContent = monthLabel;
+  el("goalCalendarPrevious").disabled =
+    year < today.getFullYear() ||
+    (year === today.getFullYear() && month <= today.getMonth());
+
+  const cells = [];
+  for (let index = 0; index < firstDay.getDay(); index += 1) {
+    cells.push('<span class="goal-calendar-blank" aria-hidden="true"></span>');
+  }
+  for (let day = 1; day <= lastDay.getDate(); day += 1) {
+    const date = new Date(year, month, day);
+    const isoDate = toIsoDate(date);
+    const isPast = date < today;
+    const isPayday = payDates.has(isoDate);
+    const isSelected = isoDate === selectedDate;
+    const accessibleDate = new Intl.DateTimeFormat("en-US", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    }).format(date);
+    const classes = [
+      "goal-calendar-day",
+      isPayday ? "is-payday" : "",
+      isSelected ? "is-selected" : "",
+    ].filter(Boolean).join(" ");
+    cells.push(`
+      <button
+        type="button"
+        class="${classes}"
+        data-goal-calendar-date="${isoDate}"
+        aria-label="${accessibleDate}${isPayday ? ", projected payday" : ""}"
+        aria-selected="${isSelected}"
+        ${isPast ? "disabled" : ""}
+      ><span>${day}</span></button>`);
+  }
+  el("goalCalendarGrid").innerHTML = cells.join("");
+}
+
+function openGoalCalendar() {
+  const selectedDate = el("goalDate").value;
+  const initialDate = selectedDate
+    ? dateValue(selectedDate)
+    : nextProjectedPayDate(state.allRows) || new Date();
+  state.goalCalendarMonth = new Date(initialDate.getFullYear(), initialDate.getMonth(), 1);
+  renderGoalCalendar();
+  el("goalDatePopover").hidden = false;
+  el("goalDateButton").setAttribute("aria-expanded", "true");
+  const selectedDay = el("goalCalendarGrid").querySelector(".is-selected");
+  const firstAvailableDay = el("goalCalendarGrid").querySelector("button:not(:disabled)");
+  (selectedDay || firstAvailableDay)?.focus();
+}
+
+function closeGoalCalendar(returnFocus = false) {
+  if (el("goalDatePopover").hidden) return;
+  el("goalDatePopover").hidden = true;
+  el("goalDateButton").setAttribute("aria-expanded", "false");
+  if (returnFocus) el("goalDateButton").focus();
+}
+
+function changeGoalCalendarMonth(offset) {
+  const monthDate = state.goalCalendarMonth || new Date();
+  state.goalCalendarMonth = new Date(monthDate.getFullYear(), monthDate.getMonth() + offset, 1);
+  renderGoalCalendar();
+}
+
+function selectGoalCalendarDate(event) {
+  const button = event.target.closest("[data-goal-calendar-date]");
+  if (!button || button.disabled) return;
+  updateGoalDateField(button.dataset.goalCalendarDate);
+  closeGoalCalendar(true);
+}
+
+function goalPaycheckPlan(goal, rows, today = new Date()) {
+  const remaining = Math.max(0, goal.target - goal.saved);
+  const payDates = projectedPayDates(rows, goal.date, today);
+  return {
+    remaining,
+    payDates,
+    paycheckCount: payDates.length,
+    contribution: remaining && payDates.length ? remaining / payDates.length : remaining,
+    nextPayDate: nextProjectedPayDate(rows, today),
+  };
+}
+
+function totalGoalContribution(goals, rows, today = new Date()) {
+  return goals.reduce(
+    (total, goal) => total + goalPaycheckPlan(goal, rows, today).contribution,
+    0,
+  );
+}
+
+function expenseFrequencyForCadence(cadenceDays) {
+  if (cadenceDays <= 8) return "weekly";
+  if (cadenceDays <= 16) return "biweekly";
+  return "monthly";
+}
+
+function goalScheduleLabel(plan) {
+  if (!plan.remaining) return "Goal funded";
+  if (!plan.paycheckCount) {
+    return plan.nextPayDate
+      ? `Next check ${formatDate(toIsoDate(plan.nextPayDate), true)} is after deadline`
+      : "No pay schedule available";
+  }
+  if (plan.paycheckCount <= 3) {
+    return `${plan.paycheckCount} check${plan.paycheckCount === 1 ? "" : "s"}: ${plan.payDates.map((date) => formatDate(date, true)).join(", ")}`;
+  }
+  return `${plan.paycheckCount} checks: ${formatDate(plan.payDates[0], true)}–${formatDate(plan.payDates.at(-1), true)}`;
+}
+
+function renderGoals() {
   const totalSaved = state.goals.reduce((total, goal) => total + goal.saved, 0);
   const totalRemaining = state.goals.reduce(
     (total, goal) => total + Math.max(0, goal.target - goal.saved),
     0,
   );
+  const totalPerPaycheck = totalGoalContribution(state.goals, state.allRows);
+  const goalExpense = state.expenses.find((expense) => expense.id === GOAL_EXPENSE_ID);
+  const goalExpenseFrequency = expenseFrequencyForCadence(estimateCadenceDays(state.allRows));
+  const goalExpenseIsCurrent =
+    goalExpense &&
+    goalExpense.name === "Savings goal contributions" &&
+    goalExpense.category === "Savings" &&
+    goalExpense.frequency === goalExpenseFrequency &&
+    Math.abs(goalExpense.amount - totalPerPaycheck) < 0.01;
   el("goalsCount").textContent = state.goals.length;
   el("goalsSavedTotal").textContent = currency.format(totalSaved);
   el("goalsRemainingTotal").textContent = currency.format(totalRemaining);
+  el("goalsPerPaycheckTotal").textContent = currency.format(totalPerPaycheck);
+  el("addGoalsToExpenses").textContent = goalExpenseIsCurrent
+    ? "Included in expenses"
+    : goalExpense
+      ? "Update expenses"
+      : "Add to expenses";
+  el("addGoalsToExpenses").disabled = totalPerPaycheck <= 0 || Boolean(goalExpenseIsCurrent);
 
   el("goalsTableBody").innerHTML = state.goals
     .map((goal) => {
       const progress = goal.target ? clamp(goal.saved / goal.target, 0, 1) : 0;
+      const plan = goalPaycheckPlan(goal, state.allRows);
       return `
         <tr>
-          <td><strong>${escapeHtml(goal.name)}</strong></td>
-          <td class="number">
+          <td data-label="Goal"><strong>${escapeHtml(goal.name)}</strong></td>
+          <td class="number" data-label="Progress">
             <span class="table-progress"><i style="width:${progress * 100}%"></i></span>
             ${percent.format(progress)}
           </td>
-          <td class="number">${currency.format(goal.saved)} / ${currency.format(goal.target)}</td>
-          <td>${escapeHtml(formatDate(goal.date))}</td>
-          <td class="number net-cell">${currency.format(goalContribution(goal, rows))}</td>
-          <td class="record-actions">
+          <td class="number" data-label="Saved / target">${currency.format(goal.saved)} / ${currency.format(goal.target)}</td>
+          <td data-label="Target date">${escapeHtml(formatDate(goal.date))}</td>
+          <td class="number net-cell" data-label="Per paycheck">
+            <strong>${currency.format(plan.contribution)}</strong>
+            <span class="goal-paycheck-note">${escapeHtml(goalScheduleLabel(plan))}</span>
+          </td>
+          <td class="record-actions" data-label="Actions">
             <button type="button" data-edit-goal="${escapeHtml(goal.id)}">Edit</button>
             <button type="button" data-delete-goal="${escapeHtml(goal.id)}">Delete</button>
           </td>
@@ -724,13 +1035,34 @@ function renderGoals(rows) {
 function clearGoalForm() {
   state.goalEditingId = null;
   el("goalForm").reset();
+  updateGoalDateField("");
+  closeGoalCalendar();
   el("goalSaved").value = "0";
   el("goalSubmit").textContent = "Add goal";
   el("goalCancelEdit").hidden = true;
 }
 
-function planningRows() {
-  return state.filteredRows.length ? state.filteredRows : state.allRows;
+function addGoalsToExpenses() {
+  const amount = normalizeExpenseAmount(totalGoalContribution(state.goals, state.allRows));
+  if (amount === null) {
+    showToast("Add an active savings goal before including it in expenses.");
+    return;
+  }
+  const expense = {
+    id: GOAL_EXPENSE_ID,
+    name: "Savings goal contributions",
+    category: "Savings",
+    amount,
+    frequency: expenseFrequencyForCadence(estimateCadenceDays(state.allRows)),
+  };
+  const exists = state.expenses.some((item) => item.id === GOAL_EXPENSE_ID);
+  state.expenses = exists
+    ? state.expenses.map((item) => (item.id === GOAL_EXPENSE_ID ? expense : item))
+    : [...state.expenses, expense];
+  renderExpenses();
+  renderGoals();
+  persistPlanner(true);
+  showToast(`Savings goal contributions were ${exists ? "updated in" : "added to"} expenses.`);
 }
 
 function createRecordId(prefix) {
@@ -778,19 +1110,187 @@ function addExpense(event) {
   el("expenseForm").reset();
   el("expenseCategory").value = "Other";
   el("expenseFrequency").value = "monthly";
-  renderExpenses(planningRows());
+  renderExpenses();
   persistPlanner(true);
   showToast(`${name} was added to recurring expenses.`);
 }
 
 function handleExpenseTableClick(event) {
+  const moveButton = event.target.closest("[data-move-expense]");
+  if (moveButton) {
+    const expense = state.expenses.find((item) => item.id === moveButton.dataset.moveExpense);
+    const reordered = moveExpenseByOffset(
+      state.expenses,
+      moveButton.dataset.moveExpense,
+      Number(moveButton.dataset.moveDirection),
+    );
+    if (reordered === state.expenses) return;
+    state.expenses = reordered;
+    renderExpenses();
+    persistPlanner(true);
+    showToast(`${expense?.name || "Expense"} was moved.`);
+    return;
+  }
+
   const button = event.target.closest("[data-delete-expense]");
-  if (!button) return;
+  if (!button) {
+    if (window.matchMedia("(hover: none), (pointer: coarse), (max-width: 760px)").matches) {
+      beginExpenseFieldEdit(event);
+    }
+    return;
+  }
   const expense = state.expenses.find((item) => item.id === button.dataset.deleteExpense);
   state.expenses = state.expenses.filter((item) => item.id !== button.dataset.deleteExpense);
-  renderExpenses(planningRows());
+  renderExpenses();
+  renderGoals();
   persistPlanner(true);
   showToast(`${expense?.name || "Expense"} was removed.`);
+}
+
+function expenseSelectEditor(sourceId, currentValue) {
+  const select = document.createElement("select");
+  [...el(sourceId).options].forEach((sourceOption) => {
+    const option = document.createElement("option");
+    option.value = sourceOption.value;
+    option.textContent = sourceOption.textContent;
+    select.append(option);
+  });
+  if (![...select.options].some((option) => option.value === currentValue)) {
+    const option = document.createElement("option");
+    option.value = currentValue;
+    option.textContent = currentValue;
+    select.append(option);
+  }
+  select.value = currentValue;
+  return select;
+}
+
+function beginExpenseFieldEdit(event) {
+  if (event.target.closest("button")) return;
+  const cell = event.target.closest("[data-edit-expense-field]");
+  if (!cell || cell.querySelector("input, select")) return;
+  const expense = state.expenses.find((item) => item.id === cell.dataset.expenseId);
+  if (!expense) return;
+  const field = cell.dataset.editExpenseField;
+  let editor;
+
+  if (field === "category") {
+    editor = expenseSelectEditor("expenseCategory", expense.category);
+  } else if (field === "frequency") {
+    editor = expenseSelectEditor("expenseFrequency", expense.frequency);
+  } else {
+    editor = document.createElement("input");
+    if (field === "name") {
+      editor.type = "text";
+      editor.maxLength = 80;
+      editor.value = expense.name;
+    } else {
+      editor.type = "number";
+      editor.min = "0.01";
+      editor.step = "0.01";
+      editor.inputMode = "decimal";
+      editor.value = (field === "monthly" ? monthlyExpenseAmount(expense) : expense.amount).toFixed(2);
+    }
+  }
+
+  const fieldLabel = {
+    name: "Expense name",
+    category: "Category",
+    frequency: "Frequency",
+    amount: "Amount",
+    monthly: "Monthly budget",
+  }[field];
+  editor.className = "expense-inline-editor";
+  editor.setAttribute("aria-label", `${fieldLabel} for ${expense.name}`);
+  cell.classList.add("is-editing");
+  cell.replaceChildren(editor);
+  editor.focus();
+  if (editor instanceof HTMLInputElement) editor.select();
+
+  let finished = false;
+  const finish = (save) => {
+    if (finished) return;
+    finished = true;
+    let nextValue = editor.value;
+    if (field === "name") nextValue = nextValue.trim().slice(0, 80) || null;
+    else if (field === "amount") nextValue = normalizeExpenseAmount(nextValue);
+    else if (field === "monthly") nextValue = expenseAmountFromMonthly(nextValue, expense.frequency);
+
+    if (save && nextValue !== null) {
+      if (field === "monthly") expense.amount = nextValue;
+      else expense[field] = nextValue;
+      renderExpenses();
+      renderGoals();
+      persistPlanner(true);
+      showToast(`${expense.name} ${fieldLabel.toLowerCase()} was updated.`);
+      return;
+    }
+    renderExpenses();
+    if (save) showToast(field === "name" ? "Enter an expense name." : "Enter an amount greater than zero.");
+  };
+
+  editor.addEventListener("blur", () => finish(true), { once: true });
+  if (editor instanceof HTMLSelectElement) editor.addEventListener("change", () => finish(true));
+  editor.addEventListener("keydown", (keyboardEvent) => {
+    if (keyboardEvent.key === "Enter" && editor instanceof HTMLInputElement) {
+      keyboardEvent.preventDefault();
+      finish(true);
+    } else if (keyboardEvent.key === "Escape") {
+      keyboardEvent.preventDefault();
+      finish(false);
+    }
+  });
+}
+
+function handleExpenseTableKeydown(event) {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const cell = event.target.closest("[data-edit-expense-field]");
+  if (!cell || cell.querySelector("input, select")) return;
+  event.preventDefault();
+  beginExpenseFieldEdit(event);
+}
+
+function clearExpenseDragState() {
+  state.expenseDraggingId = null;
+  el("expensesTableBody")
+    .querySelectorAll(".is-dragging, .drag-before, .drag-after")
+    .forEach((row) => row.classList.remove("is-dragging", "drag-before", "drag-after"));
+}
+
+function handleExpenseDragStart(event) {
+  const handle = event.target.closest("[data-drag-expense]");
+  if (!handle) return;
+  state.expenseDraggingId = handle.dataset.dragExpense;
+  handle.closest("tr")?.classList.add("is-dragging");
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", state.expenseDraggingId);
+}
+
+function handleExpenseDragOver(event) {
+  const row = event.target.closest("[data-expense-row]");
+  if (!row || !state.expenseDraggingId || row.dataset.expenseRow === state.expenseDraggingId) return;
+  event.preventDefault();
+  const placeAfter = event.clientY > row.getBoundingClientRect().top + row.offsetHeight / 2;
+  el("expensesTableBody")
+    .querySelectorAll(".drag-before, .drag-after")
+    .forEach((item) => item.classList.remove("drag-before", "drag-after"));
+  row.classList.add(placeAfter ? "drag-after" : "drag-before");
+  event.dataTransfer.dropEffect = "move";
+}
+
+function handleExpenseDrop(event) {
+  const row = event.target.closest("[data-expense-row]");
+  if (!row || !state.expenseDraggingId) return;
+  event.preventDefault();
+  const sourceId = state.expenseDraggingId;
+  const placeAfter = event.clientY > row.getBoundingClientRect().top + row.offsetHeight / 2;
+  const reordered = reorderExpenses(state.expenses, sourceId, row.dataset.expenseRow, placeAfter);
+  clearExpenseDragState();
+  if (reordered === state.expenses) return;
+  state.expenses = reordered;
+  renderExpenses();
+  persistPlanner(true);
+  showToast("Expenses were reordered.");
 }
 
 function saveGoal(event) {
@@ -817,7 +1317,7 @@ function saveGoal(event) {
   }
   const action = state.goalEditingId ? "updated" : "added";
   clearGoalForm();
-  renderGoals(planningRows());
+  renderGoals();
   persistPlanner(true);
   showToast(`${name} was ${action}.`);
 }
@@ -832,7 +1332,7 @@ function handleGoalTableClick(event) {
     el("goalName").value = goal.name;
     el("goalTarget").value = goal.target;
     el("goalSaved").value = goal.saved;
-    el("goalDate").value = goal.date;
+    updateGoalDateField(goal.date);
     el("goalSubmit").textContent = "Update goal";
     el("goalCancelEdit").hidden = false;
     el("goalName").focus();
@@ -841,7 +1341,7 @@ function handleGoalTableClick(event) {
     const goal = state.goals.find((item) => item.id === deleteButton.dataset.deleteGoal);
     state.goals = state.goals.filter((item) => item.id !== deleteButton.dataset.deleteGoal);
     if (state.goalEditingId === deleteButton.dataset.deleteGoal) clearGoalForm();
-    renderGoals(planningRows());
+    renderGoals();
     persistPlanner(true);
     showToast(`${goal?.name || "Goal"} was removed.`);
   }
@@ -917,8 +1417,8 @@ function renderHealth(rows) {
 function renderPlanning(rows) {
   if (!state.calculatorDirty) resetCalculatorDefaults(rows);
   else renderCalculator();
-  renderExpenses(rows);
-  renderGoals(rows);
+  renderExpenses();
+  renderGoals();
   renderHealth(state.allRows);
 }
 
@@ -1407,15 +1907,19 @@ function renderTable(rows) {
     .map(
       (row) => `
         <tr>
-          <td>${escapeHtml(formatDate(row.pay_date))}</td>
-          <td>${escapeHtml(formatDate(row.period_begin, true))} – ${escapeHtml(formatDate(row.period_end, true))}</td>
-          <td><span class="pay-type">${escapeHtml(row.payment_type || row.pay_type || "Payroll")}</span></td>
-          <td class="number">${number.format(row.hours_units)}</td>
-          <td class="number">${currency.format(row.regular_rate)}</td>
-          <td class="number">${currency.format(row.gross_pay)}</td>
-          <td class="number">${currency.format(row.total_taxes)}</td>
-          <td class="number">${currency.format(row.total_deductions)}</td>
-          <td class="number net-cell">${currency.format(row.net_pay)}</td>
+          <td data-label="Pay date">${escapeHtml(formatDate(row.pay_date))}</td>
+          <td data-label="Pay period">${escapeHtml(formatDate(row.period_begin, true))} – ${escapeHtml(formatDate(row.period_end, true))}</td>
+          <td data-label="Pay type"><span class="pay-type">${escapeHtml(row.payment_type || row.pay_type || "Payroll")}</span></td>
+          <td class="number" data-label="Hours">${number.format(row.hours_units)}</td>
+          <td class="number" data-label="OT hours">${number.format(Number(row.overtime_hours) || 0)}</td>
+          <td class="number" data-label="Rate">${currency.format(row.regular_rate)}</td>
+          <td class="number" data-label="Gross">${currency.format(row.gross_pay)}</td>
+          <td class="number" data-label="Taxes">${currency.format(row.total_taxes)}</td>
+          <td class="number" data-label="Deductions">${currency.format(row.total_deductions)}</td>
+          <td class="number net-cell" data-label="Net pay">${currency.format(row.net_pay)}</td>
+          <td class="paycheck-actions" data-label="Calculator">
+            <button type="button" data-use-paycheck="${state.allRows.indexOf(row)}" aria-label="Use ${escapeHtml(formatDate(row.pay_date))} paycheck in expense calculator" title="Use this paycheck in Tools">Tools</button>
+          </td>
         </tr>`,
     )
     .join("");
@@ -1450,7 +1954,7 @@ function renderActiveView() {
   document.querySelector(".chart-grid").hidden = planningActive || !hasData;
   el("healthPanel").hidden = planningActive || !hasData;
   el("history").hidden = planningActive || !hasData;
-  el("planning").hidden = !planningActive || !hasData;
+  el("planning").hidden = !planningActive;
   el("emptyState").hidden = planningActive || hasData;
 
   el("overviewTab").classList.toggle("active", !planningActive);
@@ -1476,8 +1980,8 @@ function activateView(view, scrollTarget = null, updateUrl = true) {
 
 function activateViewFromLocation() {
   const target = window.location.hash.slice(1);
-  if (target === "planning") {
-    activateView("planning", null, false);
+  if (target === "planning" || target === "expenses") {
+    activateView("planning", target === "expenses" ? "expenses" : null, false);
   } else if (target === "forecast" || target === "history") {
     activateView("overview", target, false);
   } else {
@@ -1523,10 +2027,10 @@ function updateDashboard() {
   const hasData = rows.length > 0;
   if (hasData) {
     renderCharts(rows);
-    renderPlanning(rows);
   } else {
     destroyCharts();
   }
+  renderPlanning(rows);
   renderActiveView();
 }
 
@@ -1663,7 +2167,11 @@ async function processPendingPdf() {
   try {
     const form = new FormData();
     form.append("file", state.pendingPdf, state.pendingPdf.name);
-    const response = await fetch("/api/ingest", { method: "POST", body: form });
+    const response = await fetch("/api/ingest", {
+      method: "POST",
+      headers: authHeaders(),
+      body: form,
+    });
     const contentType = response.headers.get("content-type") || "";
     const payload = contentType.includes("application/json")
       ? await response.json()
@@ -1672,10 +2180,10 @@ async function processPendingPdf() {
 
     renderIngestResult(payload);
     if (payload.added > 0) {
-      await loadBundledCSV();
+      await loadPaystubsFromServer();
       showToast(`${payload.added} new pay statement${payload.added === 1 ? "" : "s"} added.`);
     } else {
-      showToast("Duplicate detected; the CSV was not changed.");
+      showToast("Duplicate detected; the database was not changed.");
     }
     setPendingPdf(null);
   } catch (error) {
@@ -1727,32 +2235,258 @@ function exportFilteredRows() {
 async function setData(text, sourceName) {
   const rows = parseCSV(text);
   validateRows(rows);
+  applyPaystubRows(rows, sourceName);
+}
+
+function applyPaystubRows(rows, sourceName) {
   state.allRows = rows;
   state.filteredRows = rows;
   state.sourceName = sourceName;
   state.page = 1;
   populateFilterOptions();
   resetFilters();
-  showToast(`Loaded ${rows.length} payroll statements from ${sourceName}.`);
+  showToast(`Loaded ${rows.length} payroll statement${rows.length === 1 ? "" : "s"} from ${sourceName}.`);
 }
 
-async function loadBundledCSV() {
+async function loadPaystubsFromServer() {
   try {
-    const response = await fetch(DATA_URL, { cache: "no-store" });
-    if (!response.ok) throw new Error(`CSV request failed with status ${response.status}.`);
-    await setData(await response.text(), "Bundled paystubs.csv");
+    const response = await fetch("/api/paystubs", { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.message || "Pay statements are unavailable.");
+    applyPaystubRows(payload.paystubs || [], `SQLite · ${state.authUser.username}`);
   } catch (error) {
     el("coverageText").textContent =
-      "The bundled CSV could not be opened. Run this folder through a local web server or use Load CSV.";
-    el("dataStatus").textContent = "CSV needed";
+      "Your saved pay statements could not be loaded. Sign in again or load a temporary CSV.";
+    el("dataStatus").textContent = "Database unavailable";
     el("emptyState").hidden = false;
-    el("emptyState").querySelector("strong").textContent = "Load the payroll CSV to begin.";
+    el("emptyState").querySelector("strong").textContent = "Add a paystub or load a CSV to begin.";
     el("emptyState").querySelector("p").textContent =
-      "Browsers block local file access when index.html is opened directly.";
+      "PDF ingestion saves to your account. CSV loading remains temporary for analysis.";
     document.querySelector(".chart-grid").hidden = true;
     el("kpiGrid").hidden = true;
     showToast(error.message);
   }
+}
+
+function setAuthMode(mode) {
+  const loginActive = mode === "login";
+  el("loginTab").classList.toggle("active", loginActive);
+  el("loginTab").setAttribute("aria-selected", String(loginActive));
+  el("registerTab").classList.toggle("active", !loginActive);
+  el("registerTab").setAttribute("aria-selected", String(!loginActive));
+  el("loginForm").hidden = !loginActive;
+  el("registerForm").hidden = loginActive;
+  el("authMessage").textContent = "";
+  (loginActive ? el("loginUsername") : el("registerUsername")).focus();
+}
+
+function applyAuthSession(user, csrfToken) {
+  state.authUser = user;
+  state.csrfToken = csrfToken;
+  el("accountUsername").textContent = user.username;
+  el("accountRole").textContent = user.role;
+  document.body.classList.remove("auth-pending", "auth-required");
+  document.body.classList.add("auth-ready");
+  el("userManagementPanel").hidden = user.role !== "admin";
+}
+
+async function submitAuthForm(endpoint, credentials, submitButton) {
+  const originalLabel = submitButton.textContent;
+  submitButton.disabled = true;
+  submitButton.textContent = endpoint.endsWith("register") ? "Creating…" : "Signing in…";
+  el("authMessage").textContent = "";
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(credentials),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.message || "Account access failed.");
+    applyAuthSession(payload.user, payload.csrf_token);
+    await startApplication();
+  } catch (error) {
+    el("authMessage").textContent = error.message;
+  } finally {
+    submitButton.disabled = false;
+    submitButton.textContent = originalLabel;
+  }
+}
+
+async function restoreAuthSession() {
+  try {
+    const response = await fetch("/api/auth/session", { cache: "no-store" });
+    const payload = await response.json();
+    if (response.ok && payload.authenticated) {
+      applyAuthSession(payload.user, payload.csrf_token);
+      return true;
+    }
+  } catch {
+    el("authMessage").textContent = "The PayPulse server is unavailable.";
+  }
+  document.body.classList.remove("auth-pending", "auth-ready");
+  document.body.classList.add("auth-required");
+  return false;
+}
+
+async function logout() {
+  try {
+    await fetch("/api/auth/logout", { method: "POST", headers: authHeaders() });
+  } finally {
+    window.location.reload();
+  }
+}
+
+function renderUsers() {
+  el("usersTableBody").innerHTML = state.users
+    .map((user) => {
+      const isCurrent = user.id === state.authUser.id;
+      const username = escapeHtml(user.username);
+      const created = new Date(user.created_at * 1000).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+      return `
+        <tr>
+          <td data-label="User"><strong>${username}</strong>${isCurrent ? '<span class="user-current-label">You</span>' : ""}</td>
+          <td data-label="Role">
+            <select class="user-role-select" data-user-role="${user.id}" aria-label="Role for ${username}" ${isCurrent ? "disabled" : ""}>
+              <option value="member" ${user.role === "member" ? "selected" : ""}>Member</option>
+              <option value="admin" ${user.role === "admin" ? "selected" : ""}>Administrator</option>
+            </select>
+          </td>
+          <td data-label="Status"><span class="user-status ${user.active ? "" : "is-inactive"}">${user.active ? "Active" : "Inactive"}</span></td>
+          <td class="number" data-label="Pay statements">${number.format(user.paystub_count || 0)}</td>
+          <td data-label="Created">${escapeHtml(created)}</td>
+          <td class="record-actions" data-label="Actions">
+            <button type="button" data-toggle-user="${user.id}" data-user-active="${user.active}" ${isCurrent ? "disabled" : ""}>${user.active ? "Deactivate" : "Activate"}</button>
+            <button type="button" data-delete-user="${user.id}" ${isCurrent ? "disabled" : ""}>Delete</button>
+          </td>
+        </tr>`;
+    })
+    .join("");
+}
+
+async function loadUsers() {
+  if (state.authUser?.role !== "admin") return;
+  const response = await fetch("/api/users", { cache: "no-store" });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.message || "Users could not be loaded.");
+  state.users = payload.users || [];
+  renderUsers();
+}
+
+async function createManagedUser(event) {
+  event.preventDefault();
+  const response = await fetch("/api/users", {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({
+      username: el("adminUsername").value.trim(),
+      password: el("adminPassword").value,
+      role: el("adminRole").value,
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    showToast(payload.message || "User could not be created.");
+    return;
+  }
+  el("adminUserForm").reset();
+  await loadUsers();
+  showToast(`${payload.user.username} was added.`);
+}
+
+async function updateManagedUser(userId, updates) {
+  const response = await fetch(`/api/users/${userId}`, {
+    method: "PATCH",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(updates),
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.message || "User could not be updated.");
+  await loadUsers();
+}
+
+async function handleUsersTableChange(event) {
+  const select = event.target.closest("[data-user-role]");
+  if (!select) return;
+  try {
+    await updateManagedUser(Number(select.dataset.userRole), { role: select.value });
+    showToast("User role updated.");
+  } catch (error) {
+    showToast(error.message);
+    await loadUsers();
+  }
+}
+
+async function handleUsersTableClick(event) {
+  const toggle = event.target.closest("[data-toggle-user]");
+  const remove = event.target.closest("[data-delete-user]");
+  try {
+    if (toggle) {
+      await updateManagedUser(Number(toggle.dataset.toggleUser), {
+        active: toggle.dataset.userActive !== "true",
+      });
+      showToast("User access updated.");
+    } else if (remove) {
+      const user = state.users.find((item) => item.id === Number(remove.dataset.deleteUser));
+      if (!window.confirm(`Delete ${user?.username || "this user"} and all of their stored data?`)) return;
+      const response = await fetch(`/api/users/${remove.dataset.deleteUser}`, {
+        method: "DELETE",
+        headers: authHeaders(),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.message || "User could not be deleted.");
+      await loadUsers();
+      showToast(`${user?.username || "User"} was deleted.`);
+    }
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+function bindAuthEvents() {
+  el("loginTab").addEventListener("click", () => setAuthMode("login"));
+  el("registerTab").addEventListener("click", () => setAuthMode("register"));
+  el("loginForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitAuthForm(
+      "/api/auth/login",
+      { username: el("loginUsername").value.trim(), password: el("loginPassword").value },
+      event.submitter,
+    );
+  });
+  el("registerForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (el("registerPassword").value !== el("registerConfirm").value) {
+      el("authMessage").textContent = "Passwords do not match.";
+      return;
+    }
+    submitAuthForm(
+      "/api/auth/register",
+      { username: el("registerUsername").value.trim(), password: el("registerPassword").value },
+      event.submitter,
+    );
+  });
+  el("logoutButton").addEventListener("click", logout);
+}
+
+async function startApplication() {
+  if (state.appStarted) return;
+  state.appStarted = true;
+  configureChartDefaults();
+  bindEvents();
+  if (window.matchMedia("(max-width: 600px)").matches) {
+    state.pageSize = 10;
+    el("pageSize").value = "10";
+  }
+  await loadPlannerState();
+  await checkIngestionAvailability();
+  await loadPaystubsFromServer();
+  activateViewFromLocation();
+  if (state.authUser.role === "admin") await loadUsers();
 }
 
 function bindEvents() {
@@ -1799,9 +2533,35 @@ function bindEvents() {
   );
   el("expenseForm").addEventListener("submit", addExpense);
   el("expensesTableBody").addEventListener("click", handleExpenseTableClick);
+  el("expensesTableBody").addEventListener("dblclick", beginExpenseFieldEdit);
+  el("expensesTableBody").addEventListener("keydown", handleExpenseTableKeydown);
+  el("expensesTableBody").addEventListener("dragstart", handleExpenseDragStart);
+  el("expensesTableBody").addEventListener("dragover", handleExpenseDragOver);
+  el("expensesTableBody").addEventListener("drop", handleExpenseDrop);
+  el("expensesTableBody").addEventListener("dragend", clearExpenseDragState);
   el("goalForm").addEventListener("submit", saveGoal);
+  el("goalDateButton").addEventListener("click", () => {
+    if (el("goalDatePopover").hidden) openGoalCalendar();
+    else closeGoalCalendar(true);
+  });
+  el("goalCalendarPrevious").addEventListener("click", () => changeGoalCalendarMonth(-1));
+  el("goalCalendarNext").addEventListener("click", () => changeGoalCalendarMonth(1));
+  el("goalCalendarGrid").addEventListener("click", selectGoalCalendarDate);
+  document.addEventListener("click", (event) => {
+    if (!el("goalDatePicker").contains(event.target)) closeGoalCalendar();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !el("goalDatePopover").hidden) {
+      event.preventDefault();
+      closeGoalCalendar(true);
+    }
+  });
+  el("addGoalsToExpenses").addEventListener("click", addGoalsToExpenses);
   el("goalCancelEdit").addEventListener("click", clearGoalForm);
   el("goalsTableBody").addEventListener("click", handleGoalTableClick);
+  el("adminUserForm").addEventListener("submit", createManagedUser);
+  el("usersTableBody").addEventListener("change", handleUsersTableChange);
+  el("usersTableBody").addEventListener("click", handleUsersTableClick);
   el("exportButton").addEventListener("click", exportFilteredRows);
   el("ingestButton").addEventListener("click", openIngestModal);
   el("closeIngest").addEventListener("click", closeIngestModal);
@@ -1843,6 +2603,12 @@ function bindEvents() {
     state.page += 1;
     renderTable(state.filteredRows);
   });
+  el("payTableBody").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-use-paycheck]");
+    if (!button) return;
+    const row = state.allRows[Number(button.dataset.usePaycheck)];
+    if (row) loadPayStatementIntoTools(row);
+  });
 
   document.querySelectorAll("th button[data-sort]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -1870,16 +2636,33 @@ function bindEvents() {
   });
 }
 
-document.addEventListener("DOMContentLoaded", async () => {
-  try {
-    configureChartDefaults();
-    bindEvents();
-    await loadPlannerState();
-    await checkIngestionAvailability();
-    await loadBundledCSV();
-    activateViewFromLocation();
-  } catch (error) {
-    console.error(error);
-    showToast(error.message);
-  }
-});
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    calculatorInputsForPayStatement,
+    expensePlan,
+    goalPaycheckPlan,
+    expenseFrequencyForCadence,
+    expenseAmountFromMonthly,
+    moveExpenseByOffset,
+    monthlyPayPeriods,
+    monthlyExpenseAmount,
+    normalizeExpenseAmount,
+    projectedPayDates,
+    projectedPayDatesForMonth,
+    reorderExpenses,
+    totalGoalContribution,
+  };
+}
+
+if (typeof document !== "undefined") {
+  document.addEventListener("DOMContentLoaded", async () => {
+    try {
+      bindAuthEvents();
+      if (await restoreAuthSession()) await startApplication();
+    } catch (error) {
+      console.error(error);
+      if (state.authUser) showToast(error.message);
+      else el("authMessage").textContent = error.message;
+    }
+  });
+}

@@ -8,7 +8,7 @@ Turn sanitized pay history into clear trends, forecasts, expense plans, and savi
 
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Chart.js 4.5.1](https://img.shields.io/badge/Chart.js-4.5.1-FF6384?style=flat-square&logo=chartdotjs&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-5%20passing-10A58F?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-20%20passing-10A58F?style=flat-square)
 ![Deployment](https://img.shields.io/badge/deployment-self--hosted-183A5A?style=flat-square)
 ![Privacy](https://img.shields.io/badge/privacy-local--first-087C6D?style=flat-square)
 
@@ -23,7 +23,7 @@ Turn sanitized pay history into clear trends, forecasts, expense plans, and savi
 
 PayPulse is a local payroll dashboard for understanding how earnings, taxes, deductions, hours, and take-home pay change over time. It combines an interactive browser experience with a small Python server that handles durable planner storage and privacy-conscious PDF paystub ingestion.
 
-The dashboard ships with a locally bundled copy of Chart.js and makes no external application requests. Payroll records remain in a local CSV, while allocations, expenses, and savings goals are stored in a separate local planner file.
+The dashboard ships with a locally bundled copy of Chart.js and makes no external application requests. Accounts, sessions, payroll records, allocations, expenses, and savings goals are stored per user in a local SQLite database.
 
 ## Highlights
 
@@ -34,8 +34,9 @@ The dashboard ships with a locally bundled copy of Chart.js and makes no externa
 | **Tools** | Paycheck what-if calculator, take-home allocation by percentage or dollar amount, recurring expenses, and savings goals |
 | **Data quality** | Reconciliation checks, duplicate signatures, required-field coverage, and unusual pay-cadence detection |
 | **History** | Searchable, sortable, paginated pay statements with filtered CSV export |
-| **Ingestion** | PDF extraction, reconciliation, duplicate protection, atomic CSV writes, and timestamped backups |
-| **Privacy** | Local processing, sanitized fields, no external analytics, and no cloud account requirement |
+| **Ingestion** | PDF extraction, reconciliation, duplicate protection, and account-scoped SQLite storage |
+| **Accounts** | Local registration, salted password hashing, expiring sessions, CSRF protection, and an admin user panel |
+| **Privacy** | Local processing, per-user records, no external analytics, and no cloud account requirement |
 
 ## Feature tour
 
@@ -47,7 +48,7 @@ The Tools workspace starts from recent payroll averages. Model changes to rate, 
 
 ### Recurring expense planning
 
-Track weekly, biweekly, monthly, annual, and one-time expenses. PayPulse normalizes recurring costs, estimates the amount required from each paycheck, and shows the remaining take-home pay.
+Track weekly, biweekly, monthly, annual, and one-time expenses. PayPulse builds a calendar-month budget using four weekly or two every-two-week increments, estimates the amount required from each paycheck, and shows the remaining take-home pay.
 
 ![Recurring expense calculator](docs/images/expense-planning.png)
 
@@ -69,21 +70,20 @@ Upload a supported PDF statement to extract and append sanitized payroll fields.
 flowchart LR
     PDF["Paystub PDF"] --> INGEST["Python ingestion pipeline"]
     INGEST --> CHECKS["Reconciliation and duplicate checks"]
-    CHECKS --> CSV["data/paystubs.csv"]
-    CSV --> UI["Browser dashboard"]
-
-    UI --> API["Local PayPulse API"]
-    API --> PLANNER["data/planner.json"]
-    PLANNER --> UI
+    CHECKS --> API["Authenticated Python API"]
+    UI["Browser dashboard"] <--> API
+    API --> DB["SQLite: users, sessions, paystubs, planners"]
+    LEGACY["Legacy CSV / planner JSON"] -. first-account import .-> DB
 ```
 
 | Component | Responsibility |
 | --- | --- |
 | `index.html`, `styles.css`, `app.js` | Responsive interface, filtering, charts, projections, and planning calculations |
-| `server.py` | Static hosting, planner API, upload validation, and PDF-ingestion endpoint |
+| `server.py` | Static hosting, authenticated APIs, upload validation, and request security |
+| `database.py` | SQLite schema, password hashing, sessions, users, planners, and pay statements |
 | `ingestion.py` | Paystub extraction, reconciliation, deduplication, backups, and atomic CSV updates |
-| `data/paystubs.csv` | Sanitized payroll history used by the dashboard |
-| `data/planner.json` | Server-persisted allocations, expenses, and savings goals |
+| `data/paypulse.db` | Generated SQLite database and application source of truth |
+| `data/paystubs.csv`, `data/planner.json` | Optional legacy sources imported into the first registered account |
 | `vendor/chart.umd.min.js` | Locally bundled Chart.js runtime |
 
 ## Quick start
@@ -104,7 +104,7 @@ python server.py
 
 Open [http://localhost:8000](http://localhost:8000).
 
-The default server binds to `127.0.0.1`, keeping the application available only on the local machine.
+Register the first account to become the local administrator. Existing `data/paystubs.csv` and `data/planner.json` records are imported into that first account once. The default server binds to `127.0.0.1`, keeping the application available only on the local machine.
 
 ## Add payroll data
 
@@ -123,8 +123,8 @@ For every supported statement, the ingestion pipeline:
 - verifies tax and deduction component totals;
 - verifies `gross − taxes − deductions = net`;
 - detects duplicates using pay date, pay period, gross pay, and net pay;
-- creates a timestamped backup before modifying the CSV;
-- writes changes atomically and deletes the temporary PDF.
+- saves nonduplicate statements to the signed-in user’s SQLite records;
+- deletes the temporary PDF after processing.
 
 ### From the command line
 
@@ -136,32 +136,35 @@ python ingestion.py "C:\path\to\paystub.pdf"
 python ingestion.py "C:\path\to\paystub.pdf" --append
 ```
 
-The **Load CSV** action can analyze another compatible CSV temporarily in the browser. It does not overwrite the primary payroll history.
+The command-line CSV append path remains available for legacy workflows while migration is phased out. The dashboard’s **Load CSV** action analyzes a compatible CSV temporarily in the browser and does not overwrite SQLite records.
 
-## Persistent planning data
+## Accounts and persistent data
 
-The local server validates and atomically writes allocations, expenses, and savings goals to `data/planner.json`. Browser local storage acts only as an offline fallback and first-run migration source.
+The local server stores each account’s pay statements and validated planner document in `data/paypulse.db`. Passwords use salted PBKDF2-SHA256 hashes; raw passwords and session tokens are never stored. Sessions expire after seven days and state-changing authenticated requests require a CSRF token.
 
-To use another planner file:
+The first registered user becomes an administrator and receives records from the legacy CSV and planner JSON when those files exist. Later accounts start with isolated, empty payroll and planner records. Administrators can create accounts, assign roles, activate or deactivate users, view stored statement counts, and delete users from the Tools workspace.
+
+To use another database or legacy import files:
 
 ```powershell
-python server.py --planner "C:\path\to\planner.json"
+python server.py --database "C:\path\to\paypulse.db" --csv "C:\legacy\paystubs.csv" --planner "C:\legacy\planner.json"
 ```
 
-Planner records are kept separate from payroll history and are never included in payroll exports.
+Browser local storage is scoped by user and acts only as a planner fallback. Planner records are never included in payroll exports.
 
 ## Configuration
 
 ```text
-python server.py [--host HOST] [--port PORT] [--csv PATH] [--planner PATH]
+python server.py [--host HOST] [--port PORT] [--database PATH] [--csv PATH] [--planner PATH]
 ```
 
 | Option | Default | Description |
 | --- | --- | --- |
 | `--host` | `127.0.0.1` | Network interface used by the server |
 | `--port` | `8000` | HTTP port |
-| `--csv` | `data/paystubs.csv` | Payroll-history CSV |
-| `--planner` | `data/planner.json` | Persistent planning document |
+| `--database` | `data/paypulse.db` | SQLite application database |
+| `--csv` | `data/paystubs.csv` | Legacy pay-history import for the first account |
+| `--planner` | `data/planner.json` | Legacy planner import for the first account |
 
 `PAY_DASHBOARD_HOST` and `PAY_DASHBOARD_PORT` can also provide the host and port through environment variables.
 
@@ -170,9 +173,14 @@ python server.py [--host HOST] [--port PORT] [--csv PATH] [--planner PATH]
 | Method | Endpoint | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/health` | Reports ingestion and planner availability |
-| `GET` | `/api/planner` | Loads validated planning data |
-| `PUT` | `/api/planner` | Validates and atomically persists planning data |
-| `POST` | `/api/ingest` | Processes and appends an uploaded paystub PDF |
+| `GET` | `/api/auth/session` | Restores the current cookie session |
+| `POST` | `/api/auth/register` | Creates a local account and session |
+| `POST` | `/api/auth/login`, `/api/auth/logout` | Starts or ends a session |
+| `GET` | `/api/paystubs` | Loads the signed-in user’s pay statements |
+| `GET`, `PUT` | `/api/planner` | Loads or saves the signed-in user’s planner |
+| `POST` | `/api/ingest` | Processes a PDF into the signed-in user’s records |
+| `GET`, `POST` | `/api/users` | Lists or creates users as an administrator |
+| `PATCH`, `DELETE` | `/api/users/{id}` | Updates or deletes a user as an administrator |
 
 Planner requests are limited to 128 KB. PDF uploads are limited to 15 MB.
 
@@ -187,12 +195,16 @@ Projections are planning estimates—not guaranteed income. Future schedules, ra
 - Payroll and planning data are not sent to an external application service.
 - Chart.js is bundled locally.
 - Uploaded PDFs are processed by the self-hosted server and deleted immediately afterward.
-- Only sanitized payroll fields are written to the CSV.
+- Only sanitized payroll fields are written to the database.
 - Direct identifiers are excluded from the dashboard and exported views.
-- CSV changes and planner updates use atomic writes.
-- The server adds `X-Content-Type-Options: nosniff` and a no-referrer policy.
+- Accounts and records are isolated by database user ID.
+- Passwords are salted and hashed with PBKDF2-SHA256.
+- Session identifiers are hashed in SQLite and sent in `HttpOnly`, `SameSite=Lax` cookies.
+- Authenticated writes require a per-session CSRF token.
+- The final active administrator cannot be deactivated, demoted, or deleted.
+- The server blocks direct HTTP access to the `data` directory and adds `X-Content-Type-Options: nosn` plus a no-referrer policy.
 
-PayPulse does not implement authentication. Keep the default loopback binding unless the application is placed behind appropriate access controls.
+Keep the default loopback binding unless you add HTTPS and appropriate network controls for remote access.
 
 ## Testing
 
@@ -202,7 +214,7 @@ Run the complete test suite:
 python -m unittest discover -s tests -v
 ```
 
-The tests cover statement extraction and reconciliation, duplicate-safe atomic appends, planner validation, invalid-record rejection, and planner persistence round trips.
+The tests cover statement extraction and reconciliation, duplicate-safe imports, planner validation, password hashing, sessions, per-user planner/paystub isolation, and administrator safeguards.
 
 ## Project structure
 
