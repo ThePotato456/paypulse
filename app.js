@@ -2251,33 +2251,46 @@ function updateHeader(rows) {
 
 function renderActiveView() {
   const hasData = state.filteredRows.length > 0;
+  if (state.activeView === "administration" && state.authUser?.role !== "admin") {
+    state.activeView = "overview";
+  }
   const planningActive = state.activeView === "planning";
+  const administrationActive = state.activeView === "administration";
+  const overviewActive = !planningActive && !administrationActive;
 
-  document.querySelector(".filter-bar").hidden = planningActive;
-  el("kpiGrid").hidden = planningActive || !hasData;
-  document.querySelector(".chart-grid").hidden = planningActive || !hasData;
-  el("healthPanel").hidden = planningActive || !hasData;
-  el("history").hidden = planningActive || !hasData;
+  el("overview").hidden = !overviewActive;
+  document.querySelector(".filter-bar").hidden = !overviewActive;
+  el("kpiGrid").hidden = !overviewActive || !hasData;
+  document.querySelector(".chart-grid").hidden = !overviewActive || !hasData;
+  el("healthPanel").hidden = !overviewActive || !hasData;
+  el("history").hidden = !overviewActive || !hasData;
   el("planning").hidden = !planningActive;
-  el("emptyState").hidden = planningActive || hasData;
+  el("administration").hidden = !administrationActive;
+  el("emptyState").hidden = !overviewActive || hasData;
 
-  el("overviewTab").classList.toggle("active", !planningActive);
-  el("overviewTab").toggleAttribute("aria-current", !planningActive);
+  el("overviewTab").classList.toggle("active", overviewActive);
+  el("overviewTab").toggleAttribute("aria-current", overviewActive);
   el("planningTab").classList.toggle("active", planningActive);
   el("planningTab").toggleAttribute("aria-current", planningActive);
+  el("administrationTab").classList.toggle("active", administrationActive);
+  el("administrationTab").toggleAttribute("aria-current", administrationActive);
 }
 
 function activateView(view, scrollTarget = null, updateUrl = true) {
-  state.activeView = view === "planning" ? "planning" : "overview";
+  const allowedViews = new Set(["overview", "planning", "administration"]);
+  state.activeView = allowedViews.has(view) ? view : "overview";
+  if (state.activeView === "administration" && state.authUser?.role !== "admin") {
+    state.activeView = "overview";
+  }
   renderActiveView();
 
-  const hash = scrollTarget ? `#${scrollTarget}` : state.activeView === "planning" ? "#planning" : "#overview";
+  const hash = scrollTarget ? `#${scrollTarget}` : `#${state.activeView}`;
   if (updateUrl && window.location.hash !== hash) {
     window.history.pushState(null, "", hash);
   }
 
   window.requestAnimationFrame(() => {
-    const target = scrollTarget ? el(scrollTarget) : state.activeView === "planning" ? el("planning") : el("overview");
+    const target = scrollTarget ? el(scrollTarget) : el(state.activeView);
     target?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 }
@@ -2286,6 +2299,8 @@ function activateViewFromLocation() {
   const target = window.location.hash.slice(1);
   if (target === "planning" || target === "expenses") {
     activateView("planning", target === "expenses" ? "expenses" : null, false);
+  } else if (target === "administration") {
+    activateView("administration", null, false);
   } else if (target === "forecast" || target === "history") {
     activateView("overview", target, false);
   } else {
@@ -2702,6 +2717,7 @@ function applyAuthSession(user, csrfToken) {
   document.body.classList.remove("auth-pending", "auth-required");
   document.body.classList.add("auth-ready");
   el("userManagementPanel").hidden = user.role !== "admin";
+  el("administrationTab").hidden = user.role !== "admin";
 }
 
 async function submitAuthForm(endpoint, credentials, submitButton) {
@@ -2754,6 +2770,23 @@ async function logout() {
 }
 
 function renderUsers() {
+  const totalUsers = state.users.length;
+  const activeUsers = state.users.filter((user) => user.active).length;
+  const encryptedUsers = state.users.filter((user) => user.encryption_migrated).length;
+  const statementCount = state.users.reduce(
+    (total, user) => total + Number(user.paystub_count || 0),
+    0,
+  );
+  el("adminTotalUsers").textContent = number.format(totalUsers);
+  el("adminActiveUsers").textContent = number.format(activeUsers);
+  el("adminInactiveUsers").textContent = `${number.format(totalUsers - activeUsers)} inactive`;
+  el("adminEncryptedUsers").textContent = number.format(encryptedUsers);
+  el("adminPendingMigrations").textContent = `${number.format(totalUsers - encryptedUsers)} awaiting migration`;
+  el("adminStatementCount").textContent = number.format(statementCount);
+  el("recoveryOwnerNoticeText").textContent = state.authUser.is_owner
+    ? "You are the recovery owner. You can issue temporary passwords without re-encrypting a member's financial records."
+    : "Only the recovery owner can reset encrypted account passwords. Other administrators can manage roles and access.";
+
   el("usersTableBody").innerHTML = state.users
     .map((user) => {
       const isCurrent = user.id === state.authUser.id;
@@ -2773,6 +2806,7 @@ function renderUsers() {
                 <option value="admin" ${user.role === "admin" ? "selected" : ""}>Administrator</option>
               </select>${user.encryption_migrated ? "" : '<small class="user-current-label">Migration pending</small>'}
           </td>
+          <td data-label="Vault"><span class="vault-status ${user.encryption_migrated ? "" : "is-pending"}">${user.encryption_migrated ? "Encrypted" : "Awaiting login"}</span>${user.must_change_password ? '<small class="user-current-label">Password change required</small>' : ""}</td>
           <td data-label="Status"><span class="user-status ${user.active ? "" : "is-inactive"}">${user.active ? "Active" : "Inactive"}</span></td>
           <td class="number" data-label="Pay statements">${number.format(user.paystub_count || 0)}</td>
           <td data-label="Created">${escapeHtml(created)}</td>
@@ -2870,29 +2904,46 @@ async function handleUsersTableClick(event) {
 }
 
 function openPasswordModal({ targetUser = null, forced = false } = {}) {
+  const isReset = Boolean(targetUser);
   state.passwordResetUserId = targetUser?.id || null;
   state.passwordChangeForced = forced;
   el("passwordForm").reset();
   el("passwordResult").hidden = true;
-  el("currentPasswordField").hidden = Boolean(targetUser);
-  el("currentPassword").required = !targetUser;
+  el("temporaryPasswordResult").hidden = true;
+  el("generatedTemporaryPassword").value = "";
+  el("currentPasswordField").hidden = isReset || forced;
+  el("newPasswordField").hidden = isReset;
+  el("confirmNewPasswordField").hidden = isReset;
+  el("currentPassword").required = !isReset && !forced;
+  el("currentPassword").minLength = 10;
+  el("currentPasswordLabel").textContent = "Current password";
+  el("newPassword").required = !isReset;
+  el("confirmNewPassword").required = !isReset;
   el("passwordTitle").textContent = targetUser
     ? `Reset ${targetUser.username}'s password`
     : forced
       ? "Protect your vault with a new password"
       : "Change password";
   el("passwordDescription").textContent = targetUser
-    ? "The recovery key will rewrap this user's vault under a temporary password."
-    : "Your vault key will be rewrapped without re-encrypting every record.";
+    ? "Generate a secure eight-character temporary password for this user's encrypted vault."
+    : forced
+      ? "Choose a permanent password for the vault you just unlocked."
+      : "Your vault key will be rewrapped without re-encrypting every record.";
   el("passwordNotice").textContent = targetUser
-    ? "The user must replace this temporary password at their next sign-in."
-    : "Changing your password signs out every active session.";
-  el("savePassword").textContent = targetUser ? "Set temporary password" : "Change password";
+    ? "The user must replace the temporary password immediately after signing in."
+    : forced
+      ? "After this change, sign in again with your new password."
+      : "Changing your password signs out every active session.";
+  el("savePassword").hidden = false;
+  el("savePassword").textContent = targetUser ? "Generate temporary password" : "Change password";
   el("closePassword").hidden = forced;
   document.querySelector("[data-close-password]").disabled = forced;
   el("passwordModal").hidden = false;
   document.body.classList.add("modal-open");
-  window.setTimeout(() => el(targetUser ? "newPassword" : "currentPassword").focus(), 0);
+  window.setTimeout(
+    () => el(targetUser ? "savePassword" : forced ? "newPassword" : "currentPassword").focus(),
+    0,
+  );
 }
 
 function closePasswordModal() {
@@ -2906,8 +2957,9 @@ function closePasswordModal() {
 async function submitPasswordForm(event) {
   event.preventDefault();
   const result = el("passwordResult");
+  const isReset = Boolean(state.passwordResetUserId);
   const nextPassword = el("newPassword").value;
-  if (nextPassword !== el("confirmNewPassword").value) {
+  if (!isReset && nextPassword !== el("confirmNewPassword").value) {
     result.textContent = "New passwords do not match.";
     result.hidden = false;
     return;
@@ -2918,13 +2970,15 @@ async function submitPasswordForm(event) {
   button.textContent = "Securing…";
   result.hidden = true;
   try {
-    const isReset = Boolean(state.passwordResetUserId);
     const endpoint = isReset
       ? `/api/users/${state.passwordResetUserId}/reset-password`
       : "/api/auth/password";
     const body = isReset
-      ? { temporary_password: nextPassword }
-      : { current_password: el("currentPassword").value, new_password: nextPassword };
+      ? {}
+      : {
+          current_password: state.passwordChangeForced ? null : el("currentPassword").value,
+          new_password: nextPassword,
+        };
     const response = await fetch(endpoint, {
       method: "POST",
       headers: authHeaders({ "Content-Type": "application/json" }),
@@ -2934,9 +2988,13 @@ async function submitPasswordForm(event) {
     if (!response.ok) throw new Error(payload.message || "The password could not be changed.");
     if (isReset) {
       const user = state.users.find((item) => item.id === state.passwordResetUserId);
-      closePasswordModal();
       await loadUsers();
-      showToast(`${user?.username || "User"} now has a temporary password.`);
+      el("generatedTemporaryPassword").value = payload.temporary_password;
+      el("temporaryPasswordResult").hidden = false;
+      el("savePassword").hidden = true;
+      el("passwordNotice").textContent = `${user?.username || "The user"} must set a new password at the next sign-in.`;
+      el("generatedTemporaryPassword").focus();
+      el("generatedTemporaryPassword").select();
     } else {
       window.alert("Password changed. Sign in again to unlock your vault.");
       window.location.reload();
@@ -2950,8 +3008,22 @@ async function submitPasswordForm(event) {
   }
 }
 
+async function copyTemporaryPassword() {
+  const temporaryPassword = el("generatedTemporaryPassword").value;
+  if (!temporaryPassword) return;
+  try {
+    await navigator.clipboard.writeText(temporaryPassword);
+    showToast("Temporary password copied.");
+  } catch {
+    el("generatedTemporaryPassword").focus();
+    el("generatedTemporaryPassword").select();
+    showToast("Select and copy the temporary password.");
+  }
+}
+
 function bindAuthEvents() {
   el("loginTab").addEventListener("click", () => setAuthMode("login"));
+  el("copyTemporaryPassword").addEventListener("click", copyTemporaryPassword);
   el("registerTab").addEventListener("click", () => setAuthMode("register"));
   el("loginForm").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -3069,6 +3141,18 @@ function bindEvents() {
   el("adminUserForm").addEventListener("submit", createManagedUser);
   el("usersTableBody").addEventListener("change", handleUsersTableChange);
   el("usersTableBody").addEventListener("click", handleUsersTableClick);
+  el("refreshUsersButton").addEventListener("click", async () => {
+    const button = el("refreshUsersButton");
+    button.disabled = true;
+    try {
+      await loadUsers();
+      showToast("Account status refreshed.");
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
   el("exportButton").addEventListener("click", exportFilteredRows);
   el("manualEntryButton").addEventListener("click", openManualEntryModal);
   el("closeManualEntry").addEventListener("click", closeManualEntryModal);

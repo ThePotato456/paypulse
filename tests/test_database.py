@@ -225,22 +225,28 @@ class DatabaseTests(unittest.TestCase):
                 "SELECT payload FROM paystubs WHERE user_id = ?", (member["id"],)
             ).fetchone()[0]
 
-        reset = self.database.reset_password(
-            owner["id"], member["id"], "temporary secure password", recovery_private
+        reset, temporary_password = self.database.reset_password(
+            owner["id"], member["id"], recovery_private
         )
         self.assertTrue(reset["must_change_password"])
+        self.assertEqual(len(temporary_password), 8)
+        self.assertTrue(set(temporary_password).issubset(set("ABCDEFGHJKLMNPQRSTUVWXYZ23456789")))
         self.assertIsNone(self.database.unlock_user("member", "member secure password"))
-        unlocked_member, recovered_key, _ = self.unlock("member", "temporary secure password")
+        unlocked_member, recovered_key, _ = self.unlock("member", temporary_password)
         self.assertEqual(len(self.database.list_paystubs(member["id"], recovered_key)), 1)
         self.database.change_password(
             member["id"],
-            "temporary secure password",
+            None,
             "new permanent secure password",
             recovered_key,
         )
         changed, changed_key, _ = self.unlock("member", "new permanent secure password")
         self.assertFalse(changed["must_change_password"])
         self.assertEqual(changed_key, recovered_key)
+        with self.assertRaisesRegex(ValueError, "Current password is incorrect"):
+            self.database.change_password(
+                member["id"], None, "another secure password", recovered_key
+            )
         with self.database.connect() as connection:
             after = connection.execute(
                 "SELECT payload FROM paystubs WHERE user_id = ?", (member["id"],)

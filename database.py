@@ -37,6 +37,8 @@ TEXT_PAYSTUB_FIELDS = {"pay_date", "period_begin", "period_end", "pay_type", "pa
 RECOVERY_PUBLIC_KEY = "recovery_public_key_v1"
 RECOVERY_PRIVATE_KEY = "recovery_private_key_v1"
 PLAINTEXT_CLEANUP_REQUIRED = "plaintext_cleanup_required_v1"
+TEMPORARY_PASSWORD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+TEMPORARY_PASSWORD_LENGTH = 8
 
 
 class VaultError(RuntimeError):
@@ -104,6 +106,14 @@ def validate_password(password: object) -> str:
     if len(value) > 128:
         raise ValueError("Password must contain no more than 128 characters.")
     return value
+
+
+def generate_temporary_password() -> str:
+    """Return a short-lived, unambiguous password suitable for verbal sharing."""
+    return "".join(
+        secrets.choice(TEMPORARY_PASSWORD_ALPHABET)
+        for _ in range(TEMPORARY_PASSWORD_LENGTH)
+    )
 
 
 def hash_password(password: str, *, iterations: int = PASSWORD_ITERATIONS) -> str:
@@ -661,7 +671,11 @@ class PayPulseDatabase:
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-            if not row or not verify_password(current, row["password_hash"]):
+            if not row:
+                raise ValueError("Current password is incorrect.")
+            if not row["must_change_password"] and not verify_password(
+                current, row["password_hash"]
+            ):
                 raise ValueError("Current password is incorrect.")
             salt = secrets.token_bytes(16)
             password_key = _derive_password_key(new, salt)
@@ -691,10 +705,9 @@ class PayPulseDatabase:
         self,
         owner_id: int,
         target_id: int,
-        temporary_password: object,
         recovery_private: bytes,
-    ) -> dict[str, object]:
-        temporary = validate_password(temporary_password)
+    ) -> tuple[dict[str, object], str]:
+        temporary = generate_temporary_password()
         if owner_id == target_id:
             raise ValueError("The recovery owner must change their password using the current password.")
         with self.connect() as connection:
@@ -720,7 +733,7 @@ class PayPulseDatabase:
             )
             self._clear_user_sessions(connection, target_id)
             updated = connection.execute("SELECT * FROM users WHERE id = ?", (target_id,)).fetchone()
-        return self._public_user(updated)
+        return self._public_user(updated), temporary
 
     def get_planner(
         self, user_id: int, default_planner: dict[str, object], vault_key: bytes

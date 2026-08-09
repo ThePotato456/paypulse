@@ -1928,9 +1928,75 @@ h1 {
 
 .user-management-card {
   width: 100%;
-  margin-top: 16px;
+  margin-top: 0;
   padding: 0;
   overflow: hidden;
+}
+
+.administration-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  padding: 22px 0 34px;
+}
+
+.administration-section > * {
+  grid-column: 1 / -1;
+}
+
+.administration-section[hidden] {
+  display: none;
+}
+
+.administration-heading {
+  margin-bottom: 0;
+}
+
+.administration-heading .button {
+  align-self: center;
+  flex: 0 0 auto;
+}
+
+.administration-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.administration-stat {
+  display: grid;
+  grid-column: auto;
+  gap: 5px;
+  padding: 18px 20px;
+}
+
+.administration-stat span,
+.administration-stat small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.administration-stat strong {
+  color: var(--navy);
+  font-size: 28px;
+  letter-spacing: -0.04em;
+}
+
+.administration-notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 16px;
+  border: 1px solid #ddd4f3;
+  border-radius: 12px;
+  background: #f7f4fd;
+  color: #5c4b8b;
+  font-size: 12px;
+}
+
+.administration-notice strong {
+  flex: 0 0 auto;
+  color: var(--navy);
 }
 
 .admin-user-form {
@@ -1961,6 +2027,32 @@ h1 {
 
 .user-status.is-inactive {
   color: var(--muted);
+}
+
+.vault-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--teal-dark);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.vault-status::before {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--teal);
+  content: "";
+  transform: rotate(45deg);
+}
+
+.vault-status.is-pending {
+  color: #98762a;
+}
+
+.vault-status.is-pending::before {
+  background: var(--gold);
 }
 
 .user-status.is-inactive::before {
@@ -2546,6 +2638,28 @@ footer {
   max-width: 34rem;
 }
 
+.temporary-password-result {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid rgba(16, 165, 143, 0.35);
+  border-radius: 14px;
+  background: rgba(16, 165, 143, 0.08);
+}
+
+.temporary-password-copy-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+#generatedTemporaryPassword {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 1.2rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
 .password-modal-card .ingest-body {
   display: grid;
   gap: 1rem;
@@ -2843,6 +2957,10 @@ body.modal-open {
 }
 
 @media (max-width: 1120px) {
+  .administration-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .kpi-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -2916,6 +3034,16 @@ body.modal-open {
 }
 
 @media (max-width: 760px) {
+  .administration-heading,
+  .administration-notice {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .administration-heading .button {
+    width: 100%;
+  }
+
   .shell {
     width: min(100% - 28px, 1440px);
   }
@@ -3112,6 +3240,10 @@ body.modal-open {
 }
 
 @media (max-width: 480px) {
+  .administration-summary {
+    grid-template-columns: 1fr;
+  }
+
   .auth-gate {
     align-items: start;
     padding: 14px;

@@ -488,13 +488,19 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
                 payload = self._read_json_body()
                 if not isinstance(payload, dict):
                     raise ValueError("Password reset data must be a JSON object.")
-                user = DATABASE.reset_password(
+                user, temporary_password = DATABASE.reset_password(
                     int(session[0]["id"]),
                     int(reset_match.group(1)),
-                    payload.get("temporary_password"),
                     session[3],
                 )
-                self._send_json(HTTPStatus.OK, {"status": "ok", "user": user})
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "status": "ok",
+                        "user": user,
+                        "temporary_password": temporary_password,
+                    },
+                )
             except PermissionError as exc:
                 self._send_json(HTTPStatus.FORBIDDEN, {"status": "error", "message": str(exc)})
             except LookupError as exc:

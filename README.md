@@ -35,7 +35,7 @@ The dashboard ships with a locally bundled copy of Chart.js and makes no externa
 | **Data quality** | Reconciliation checks, duplicate signatures, required-field coverage, and unusual pay-cadence detection |
 | **History** | Searchable, sortable, paginated, inline-editable pay statements with row removal and filtered CSV export |
 | **Ingestion** | PDF extraction, reconciliation, duplicate protection, and account-scoped SQLite storage |
-| **Accounts** | Local registration, password-unlocked vaults, expiring sessions, owner recovery, CSRF protection, and an admin user panel |
+| **Accounts** | Local registration, password-unlocked vaults, expiring sessions, owner recovery, CSRF protection, and a dedicated administration page |
 | **Privacy** | AES-256-GCM financial storage, local processing, per-user records, no external analytics, and no cloud account requirement |
 
 ## Feature tour
@@ -197,7 +197,7 @@ python server.py [--host HOST] [--port PORT] [--database PATH] [--csv PATH] [--p
 | `POST` | `/api/ingest` | Processes a PDF into the signed-in user’s records |
 | `GET`, `POST` | `/api/users` | Lists or creates users as an administrator |
 | `PATCH`, `DELETE` | `/api/users/{id}` | Updates or deletes a user as an administrator |
-| `POST` | `/api/users/{id}/reset-password` | Resets an encrypted account as the recovery owner |
+| `POST` | `/api/users/{id}/reset-password` | Generates an eight-character temporary password as the recovery owner and requires the user to replace it at next sign-in |
 
 Planner requests are limited to 128 KB, CSV imports to 4 MB or 10,000 statements, and PDF uploads to 15 MB.
 

@@ -129,6 +129,7 @@
         <a href="#forecast" data-view="overview" data-scroll-target="forecast">Forecast</a>
         <a href="#history" data-view="overview" data-scroll-target="history">Pay history</a>
         <a id="planningTab" href="#planning" data-view="planning">Tools</a>
+        <a id="administrationTab" href="#administration" data-view="administration" hidden>Administration</a>
       </nav>
 
       <section class="filter-bar" aria-label="Dashboard filters">
@@ -732,7 +733,31 @@
           </article>
         </div>
 
-        <article id="userManagementPanel" class="panel records-card user-management-card" hidden>
+      </section>
+
+      <section id="administration" class="administration-section" aria-labelledby="administrationTitle" hidden>
+        <div class="section-heading administration-heading">
+          <div>
+            <p class="panel-kicker">ADMINISTRATION</p>
+            <h2 id="administrationTitle">Account control center</h2>
+            <p>Manage access, monitor encrypted vault migration, and recover member accounts from one dedicated workspace.</p>
+          </div>
+          <button id="refreshUsersButton" class="button button-secondary" type="button">Refresh accounts</button>
+        </div>
+
+        <div class="administration-summary" aria-label="Account summary">
+          <article class="panel administration-stat"><span>Total accounts</span><strong id="adminTotalUsers">0</strong><small>All registered users</small></article>
+          <article class="panel administration-stat"><span>Active accounts</span><strong id="adminActiveUsers">0</strong><small id="adminInactiveUsers">0 inactive</small></article>
+          <article class="panel administration-stat"><span>Encrypted vaults</span><strong id="adminEncryptedUsers">0</strong><small id="adminPendingMigrations">0 awaiting migration</small></article>
+          <article class="panel administration-stat"><span>Pay statements</span><strong id="adminStatementCount">0</strong><small>Across every account</small></article>
+        </div>
+
+        <aside id="recoveryOwnerNotice" class="administration-notice" role="note">
+          <strong>Recovery owner controls</strong>
+          <span id="recoveryOwnerNoticeText">Only the recovery owner can reset an encrypted account password.</span>
+        </aside>
+
+        <article id="userManagementPanel" class="panel records-card user-management-card">
           <div class="records-card-header">
             <div class="tool-card-header">
               <span class="tool-icon tool-icon-admin" aria-hidden="true">
@@ -740,7 +765,7 @@
               </span>
               <div><p class="panel-kicker">ADMINISTRATION</p><h3>User management</h3></div>
             </div>
-            <p>Create local accounts, assign administrators, deactivate access, and review each user’s stored pay statements.</p>
+            <p>Create local accounts, assign roles, deactivate access, and review encryption and payroll status.</p>
           </div>
           <form id="adminUserForm" class="records-form admin-user-form">
             <div class="field field-name">
@@ -759,7 +784,7 @@
           </form>
           <div class="tool-table-scroll">
             <table class="tool-table users-table">
-              <thead><tr><th>User</th><th>Role</th><th>Status</th><th class="number">Pay statements</th><th>Created</th><th><span class="sr-only">Actions</span></th></tr></thead>
+              <thead><tr><th>User</th><th>Role</th><th>Vault</th><th>Status</th><th class="number">Pay statements</th><th>Created</th><th><span class="sr-only">Actions</span></th></tr></thead>
               <tbody id="usersTableBody"></tbody>
             </table>
           </div>
@@ -1012,16 +1037,24 @@
         </div>
         <div class="ingest-body">
           <div id="currentPasswordField" class="field">
-            <label for="currentPassword">Current password</label>
+            <label id="currentPasswordLabel" for="currentPassword">Current password</label>
             <input id="currentPassword" type="password" minlength="10" maxlength="128" autocomplete="current-password" />
           </div>
-          <div class="field">
+          <div id="newPasswordField" class="field">
             <label for="newPassword">New password</label>
             <input id="newPassword" type="password" minlength="10" maxlength="128" autocomplete="new-password" required />
           </div>
-          <div class="field">
+          <div id="confirmNewPasswordField" class="field">
             <label for="confirmNewPassword">Confirm new password</label>
             <input id="confirmNewPassword" type="password" minlength="10" maxlength="128" autocomplete="new-password" required />
+          </div>
+          <div id="temporaryPasswordResult" class="temporary-password-result" hidden>
+            <label for="generatedTemporaryPassword">Temporary password</label>
+            <div class="temporary-password-copy-row">
+              <input id="generatedTemporaryPassword" type="text" readonly aria-describedby="temporaryPasswordHelp" />
+              <button id="copyTemporaryPassword" class="button" type="button">Copy</button>
+            </div>
+            <small id="temporaryPasswordHelp">Share this password securely. It is shown only for this reset.</small>
           </div>
           <div id="passwordResult" class="ingest-result is-error" role="alert" hidden></div>
         </div>
