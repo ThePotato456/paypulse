@@ -7,10 +7,12 @@ import csv
 import hashlib
 import hmac
 import json
+import math
 import re
 import secrets
 import sqlite3
 import time
+from datetime import date
 from pathlib import Path
 from typing import Iterable
 
@@ -446,10 +448,99 @@ class PayPulseDatabase:
     def list_paystubs(self, user_id: int) -> list[dict[str, object]]:
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT payload FROM paystubs WHERE user_id = ? ORDER BY pay_date, id",
+                "SELECT id, payload FROM paystubs WHERE user_id = ? ORDER BY pay_date, id",
                 (user_id,),
             ).fetchall()
-        return [json.loads(row["payload"]) for row in rows]
+        records = []
+        for row in rows:
+            record = json.loads(row["payload"])
+            record["_record_id"] = int(row["id"])
+            records.append(record)
+        return records
+
+    def update_paystub_record(
+        self, user_id: int, record_id: int, raw_record: dict[str, object]
+    ) -> dict[str, object]:
+        """Replace one user-owned paystub after validating editable payroll fields."""
+        record = normalize_paystub_record(raw_record)
+        for field in ("pay_date", "period_begin", "period_end"):
+            value = str(record.get(field) or "")
+            if value and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                raise ValueError(f"{field.replace('_', ' ').title()} must use YYYY-MM-DD format.")
+            if value:
+                try:
+                    date.fromisoformat(value)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"{field.replace('_', ' ').title()} must be a valid calendar date."
+                    ) from exc
+        if bool(record["period_begin"]) != bool(record["period_end"]):
+            raise ValueError("Enter both pay-period dates or leave both blank.")
+        if record["period_begin"] and record["period_begin"] > record["period_end"]:
+            raise ValueError("Pay-period start cannot be after its end.")
+        for field in CSV_FIELDS:
+            if field in TEXT_PAYSTUB_FIELDS or field == "year":
+                continue
+            value = float(record[field])
+            if not math.isfinite(value):
+                raise ValueError(f"{field.replace('_', ' ').title()} must be a valid number.")
+        for field in (
+            "gross_pay",
+            "total_taxes",
+            "total_deductions",
+            "net_pay",
+            "hours_units",
+            "regular_rate",
+            "overtime_hours",
+        ):
+            if float(record[field]) < 0:
+                raise ValueError(f"{field.replace('_', ' ').title()} must be zero or greater.")
+        expected_net = round(
+            float(record["gross_pay"])
+            - float(record["total_taxes"])
+            - float(record["total_deductions"]),
+            2,
+        )
+        if abs(expected_net - float(record["net_pay"])) > 0.02:
+            raise ValueError("Gross minus taxes and deductions must equal net pay.")
+        record["calculated_net"] = expected_net
+        record["year"] = int(str(record["pay_date"])[:4])
+
+        with self.connect() as connection:
+            existing = connection.execute(
+                "SELECT id FROM paystubs WHERE id = ? AND user_id = ?",
+                (record_id, user_id),
+            ).fetchone()
+            if not existing:
+                raise LookupError("Pay statement not found.")
+            try:
+                connection.execute(
+                    """
+                    UPDATE paystubs
+                    SET signature = ?, pay_date = ?, payload = ?
+                    WHERE id = ? AND user_id = ?
+                    """,
+                    (
+                        paystub_signature(record),
+                        record["pay_date"],
+                        json.dumps(record, separators=(",", ":")),
+                        record_id,
+                        user_id,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("That change would duplicate another pay statement.") from exc
+        record["_record_id"] = record_id
+        return record
+
+    def delete_paystub_record(self, user_id: int, record_id: int) -> None:
+        """Delete one paystub belonging to the current user."""
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM paystubs WHERE id = ? AND user_id = ?", (record_id, user_id)
+            )
+            if not cursor.rowcount:
+                raise LookupError("Pay statement not found.")
 
 
 def load_legacy_paystubs(path: str | Path) -> list[dict[str, object]]:

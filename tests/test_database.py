@@ -114,6 +114,34 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(len(stored), 1)
         self.assertEqual(stored[0]["overtime_hours"], 0.8)
 
+    def test_paystub_records_can_be_updated_and_deleted_only_by_their_owner(self):
+        owner = self.database.register_user("owner", "correct horse battery staple")
+        other = self.database.register_user("other", "another secure password")
+        self.database.add_paystub_records(
+            owner["id"], [sample_record(), sample_record("2026-08-07")]
+        )
+        stored = self.database.list_paystubs(owner["id"])
+        record_id = stored[0]["_record_id"]
+        edited = {**stored[0], "gross_pay": 900, "net_pay": 748.98}
+
+        updated = self.database.update_paystub_record(owner["id"], record_id, edited)
+
+        self.assertEqual(updated["_record_id"], record_id)
+        self.assertEqual(updated["gross_pay"], 900)
+        self.assertEqual(updated["calculated_net"], 748.98)
+        with self.assertRaisesRegex(LookupError, "not found"):
+            self.database.update_paystub_record(other["id"], record_id, edited)
+        with self.assertRaisesRegex(LookupError, "not found"):
+            self.database.delete_paystub_record(other["id"], record_id)
+
+        duplicate = {**self.database.list_paystubs(owner["id"])[0]}
+        second_id = self.database.list_paystubs(owner["id"])[1]["_record_id"]
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            self.database.update_paystub_record(owner["id"], second_id, duplicate)
+
+        self.database.delete_paystub_record(owner["id"], record_id)
+        self.assertEqual(len(self.database.list_paystubs(owner["id"])), 1)
+
     def test_last_active_admin_cannot_be_removed(self):
         admin = self.database.register_user("owner", "correct horse battery staple")
         with self.assertRaisesRegex(ValueError, "administrator"):

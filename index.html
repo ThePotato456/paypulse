@@ -12,7 +12,7 @@
       rel="icon"
       href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23183a5a'/><path d='M8 23V14m8 9V8m8 15V11' fill='none' stroke='%2310a58f' stroke-width='3' stroke-linecap='round'/></svg>"
     />
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=20260808-pay-history-edit" />
   </head>
   <body class="auth-pending">
     <a class="skip-link" href="#dashboard">Skip to dashboard</a>
@@ -771,7 +771,7 @@
           <div>
             <p class="panel-kicker">PAY STATEMENTS</p>
             <h2 id="tableTitle">Pay history</h2>
-            <p id="tableCaption">Standard payroll fields only; identifiers are excluded.</p>
+            <p id="tableCaption">Double-click or tap a field to edit it. Changes save to your account.</p>
           </div>
           <button id="exportButton" class="button button-secondary" type="button">
             <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -795,7 +795,7 @@
                 <th class="number"><button type="button" data-sort="total_taxes">Taxes <span>↕</span></button></th>
                 <th class="number"><button type="button" data-sort="total_deductions">Deductions <span>↕</span></button></th>
                 <th class="number"><button type="button" data-sort="net_pay">Net pay <span>↕</span></button></th>
-                <th><span class="sr-only">Tools action</span></th>
+                <th><span class="sr-only">Row actions</span></th>
               </tr>
             </thead>
             <tbody id="payTableBody"></tbody>
@@ -1001,6 +1001,6 @@
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
     <script src="vendor/chart.umd.min.js"></script>
-    <script src="app.js?v=20260808-manual-income"></script>
+    <script src="app.js?v=20260808-pay-history-edit"></script>
   </body>
 </html>

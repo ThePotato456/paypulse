@@ -2302,6 +2302,12 @@ td.number {
   text-align: right;
 }
 
+.paycheck-action-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .paycheck-actions button {
   padding: 4px 8px;
   border: 1px solid #c9d8df;
@@ -2320,6 +2326,58 @@ td.number {
   border-color: var(--teal);
   background: rgba(16, 165, 143, 0.08);
   outline: 0;
+}
+
+.paycheck-actions .paystub-remove-button {
+  border-color: rgba(216, 98, 98, 0.34);
+  color: #a13f3f;
+}
+
+.paycheck-actions .paystub-remove-button:hover,
+.paycheck-actions .paystub-remove-button:focus-visible {
+  border-color: var(--red);
+  background: rgba(216, 98, 98, 0.09);
+}
+
+.paycheck-actions .paystub-remove-button.is-confirming {
+  border-color: var(--red);
+  background: var(--red);
+  color: #fff;
+}
+
+.paystub-editable-cell {
+  cursor: text;
+  transition: background 140ms ease, box-shadow 140ms ease;
+}
+
+.paystub-editable-cell:hover,
+.paystub-editable-cell:focus-visible {
+  background: rgba(16, 165, 143, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(16, 165, 143, 0.25);
+  outline: 0;
+}
+
+.paystub-editable-cell.is-editing {
+  padding: 5px 7px;
+  background: #fff;
+}
+
+.paystub-inline-editor {
+  width: 100%;
+  min-width: 105px;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid var(--teal);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--navy);
+  font: inherit;
+  text-align: inherit;
+  outline: 3px solid rgba(16, 165, 143, 0.13);
+}
+
+.paystub-editable-cell[data-edit-paystub-field="pay_period"] .paystub-inline-editor {
+  min-width: 210px;
 }
 
 td {
@@ -3542,6 +3600,33 @@ body.modal-open {
 
   #history td.number {
     text-align: left;
+  }
+
+  #history .paystub-editable-cell::after {
+    display: block;
+    margin-top: 4px;
+    color: var(--teal-dark);
+    content: "Tap to edit";
+    font-size: 8px;
+    font-weight: 750;
+    opacity: 0.7;
+  }
+
+  #history .paystub-editable-cell.is-editing::after {
+    display: none;
+  }
+
+  #history .paystub-inline-editor {
+    min-width: 0;
+    min-height: 40px;
+    text-align: left;
+  }
+
+  .paycheck-action-group {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
   }
 
   .paycheck-actions button {

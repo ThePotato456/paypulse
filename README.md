@@ -8,7 +8,7 @@ Turn sanitized pay history into clear trends, forecasts, expense plans, and savi
 
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Chart.js 4.5.1](https://img.shields.io/badge/Chart.js-4.5.1-FF6384?style=flat-square&logo=chartdotjs&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-28%20passing-10A58F?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-31%20passing-10A58F?style=flat-square)
 ![Deployment](https://img.shields.io/badge/deployment-self--hosted-183A5A?style=flat-square)
 ![Privacy](https://img.shields.io/badge/privacy-local--first-087C6D?style=flat-square)
 
@@ -33,7 +33,7 @@ The dashboard ships with a locally bundled copy of Chart.js and makes no externa
 | **Forecasting** | Adjustable 3-, 6-, and 12-month projections with conservative, expected, and upside scenarios |
 | **Tools** | Paycheck what-if calculator, take-home allocation by percentage or dollar amount, recurring expenses, and savings goals |
 | **Data quality** | Reconciliation checks, duplicate signatures, required-field coverage, and unusual pay-cadence detection |
-| **History** | Searchable, sortable, paginated pay statements with filtered CSV export |
+| **History** | Searchable, sortable, paginated, inline-editable pay statements with row removal and filtered CSV export |
 | **Ingestion** | PDF extraction, reconciliation, duplicate protection, and account-scoped SQLite storage |
 | **Accounts** | Local registration, salted password hashing, expiring sessions, CSRF protection, and an admin user panel |
 | **Privacy** | Local processing, per-user records, no external analytics, and no cloud account requirement |
@@ -187,6 +187,8 @@ python server.py [--host HOST] [--port PORT] [--database PATH] [--csv PATH] [--p
 | `GET` | `/api/paystubs` | Loads the signed-in user’s pay statements |
 | `POST` | `/api/paystubs/import` | Saves CSV payroll rows to the signed-in user's records |
 | `POST` | `/api/paystubs/manual` | Saves a validated manual paystub or income deposit |
+| `PATCH` | `/api/paystubs/{id}` | Updates one signed-in user's pay statement |
+| `DELETE` | `/api/paystubs/{id}` | Removes one signed-in user's pay statement |
 | `GET`, `PUT` | `/api/planner` | Loads or saves the signed-in user’s planner |
 | `POST` | `/api/ingest` | Processes a PDF into the signed-in user’s records |
 | `GET`, `POST` | `/api/users` | Lists or creates users as an administrator |

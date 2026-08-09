@@ -513,7 +513,27 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
             )
 
     def do_PATCH(self) -> None:
-        match = re.fullmatch(r"/api/users/(\d+)", urlparse(self.path).path)
+        request_path = urlparse(self.path).path
+        paystub_match = re.fullmatch(r"/api/paystubs/(\d+)", request_path)
+        if paystub_match:
+            session = self._require_user(csrf=True)
+            if not session:
+                return
+            try:
+                payload = self._read_json_body()
+                if not isinstance(payload, dict) or not isinstance(payload.get("record"), dict):
+                    raise ValueError("Pay statement data must contain a record object.")
+                record = DATABASE.update_paystub_record(
+                    int(session[0]["id"]), int(paystub_match.group(1)), payload["record"]
+                )
+                self._send_json(HTTPStatus.OK, {"status": "ok", "record": record})
+            except LookupError as exc:
+                self._send_json(HTTPStatus.NOT_FOUND, {"status": "error", "message": str(exc)})
+            except ValueError as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)})
+            return
+
+        match = re.fullmatch(r"/api/users/(\d+)", request_path)
         if not match:
             self._send_json(HTTPStatus.NOT_FOUND, {"status": "error", "message": "Not found."})
             return
@@ -539,7 +559,22 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
             self._send_json(HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)})
 
     def do_DELETE(self) -> None:
-        match = re.fullmatch(r"/api/users/(\d+)", urlparse(self.path).path)
+        request_path = urlparse(self.path).path
+        paystub_match = re.fullmatch(r"/api/paystubs/(\d+)", request_path)
+        if paystub_match:
+            session = self._require_user(csrf=True)
+            if not session:
+                return
+            try:
+                DATABASE.delete_paystub_record(
+                    int(session[0]["id"]), int(paystub_match.group(1))
+                )
+                self._send_json(HTTPStatus.OK, {"status": "ok"})
+            except LookupError as exc:
+                self._send_json(HTTPStatus.NOT_FOUND, {"status": "error", "message": str(exc)})
+            return
+
+        match = re.fullmatch(r"/api/users/(\d+)", request_path)
         if not match:
             self._send_json(HTTPStatus.NOT_FOUND, {"status": "error", "message": "Not found."})
             return

@@ -12,6 +12,8 @@ const {
   monthlyExpenseAmount,
   monthlyPayPeriods,
   normalizeExpenseAmount,
+  parsePaystubPeriod,
+  recalculateEditedPaystub,
   recurringManualIncome,
   reorderExpenses,
 } = require("../app.js");
@@ -134,4 +136,41 @@ test("pay statements seed the hypothetical paycheck calculator", () => {
   assert.equal(inputs.bonus, 100);
   assert.equal(inputs.taxRate, (100 / 975) * 100);
   assert.equal(inputs.deductionRate, (25 / 975) * 100);
+});
+
+test("pay history edits preserve reconciled financial values", () => {
+  const record = {
+    gross_pay: 1000,
+    total_taxes: 150,
+    total_deductions: 50,
+    net_pay: 800,
+    hours_units: 42,
+    regular_hours: 40,
+    overtime_hours: 2,
+    regular_rate: 20,
+  };
+
+  record.total_taxes = 175;
+  assert.equal(recalculateEditedPaystub(record, "total_taxes"), true);
+  assert.equal(record.net_pay, 775);
+  assert.equal(record.calculated_net, 775);
+
+  record.net_pay = 825;
+  assert.equal(recalculateEditedPaystub(record, "net_pay"), true);
+  assert.equal(record.gross_pay, 1050);
+
+  record.hours_units = 44;
+  recalculateEditedPaystub(record, "hours_units");
+  assert.equal(record.regular_hours, 42);
+  assert.equal(record.overtime_rate, 30);
+});
+
+test("pay periods accept a clear editable date range", () => {
+  assert.deepEqual(parsePaystubPeriod("2026-07-01 to 2026-07-14"), {
+    period_begin: "2026-07-01",
+    period_end: "2026-07-14",
+  });
+  assert.deepEqual(parsePaystubPeriod(""), { period_begin: "", period_end: "" });
+  assert.equal(parsePaystubPeriod("07/01/2026 - 07/14/2026"), null);
+  assert.equal(parsePaystubPeriod("2026-07-14 to 2026-07-01"), null);
 });

@@ -111,6 +111,7 @@ const state = {
   allocations: { ...DEFAULT_ALLOCATIONS },
   expenses: [],
   expenseDraggingId: null,
+  paystubDeleteConfirmId: null,
   goals: [],
   goalEditingId: null,
   goalCalendarMonth: null,
@@ -2009,6 +2010,185 @@ function sortedRows(rows) {
   });
 }
 
+const PAYSTUB_EDIT_FIELDS = {
+  pay_date: { label: "Pay date", type: "date" },
+  pay_period: { label: "Pay period", type: "period" },
+  payment_type: { label: "Pay type", type: "text" },
+  hours_units: { label: "Hours", type: "number", step: "0.01" },
+  overtime_hours: { label: "Overtime hours", type: "number", step: "0.01" },
+  regular_rate: { label: "Hourly rate", type: "number", step: "0.01" },
+  gross_pay: { label: "Gross pay", type: "number", step: "0.01" },
+  total_taxes: { label: "Taxes", type: "number", step: "0.01" },
+  total_deductions: { label: "Deductions", type: "number", step: "0.01" },
+  net_pay: { label: "Net pay", type: "number", step: "0.01" },
+};
+
+function paystubEditAttributes(row, field) {
+  if (!row._record_id) return "";
+  const label = PAYSTUB_EDIT_FIELDS[field].label;
+  return `data-paystub-id="${Number(row._record_id)}" data-edit-paystub-field="${field}" tabindex="0" aria-label="Edit ${escapeHtml(label)} for ${escapeHtml(formatDate(row.pay_date))}" title="Double-click or tap to edit"`;
+}
+
+function paystubPeriodValue(row) {
+  return row.period_begin && row.period_end ? `${row.period_begin} to ${row.period_end}` : "";
+}
+
+function parsePaystubPeriod(value) {
+  const cleaned = String(value || "").trim();
+  if (!cleaned) return { period_begin: "", period_end: "" };
+  const match = cleaned.match(/^(\d{4}-\d{2}-\d{2})\s+(?:to|–)\s+(\d{4}-\d{2}-\d{2})$/i);
+  if (!match || Number.isNaN(dateValue(match[1]).valueOf()) || Number.isNaN(dateValue(match[2]).valueOf())) return null;
+  if (match[1] > match[2]) return null;
+  return { period_begin: match[1], period_end: match[2] };
+}
+
+function recalculateEditedPaystub(record, changedField) {
+  if (changedField === "hours_units" || changedField === "overtime_hours") {
+    record.regular_hours = Math.max(0, record.hours_units - record.overtime_hours);
+  }
+  if (["hours_units", "overtime_hours", "regular_rate"].includes(changedField)) {
+    record.overtime_rate = record.regular_rate * 1.5;
+    record.regular_pay = record.regular_rate * record.regular_hours;
+    record.overtime_pay = record.overtime_rate * record.overtime_hours;
+    record.bonus_pay = Math.max(0, record.gross_pay - record.regular_pay - record.overtime_pay);
+  }
+  if (changedField === "net_pay") {
+    record.gross_pay = record.net_pay + record.total_taxes + record.total_deductions;
+  } else if (["gross_pay", "total_taxes", "total_deductions"].includes(changedField)) {
+    record.net_pay = record.gross_pay - record.total_taxes - record.total_deductions;
+    if (record.net_pay < 0) return false;
+  }
+  if (changedField === "gross_pay" || changedField === "net_pay") {
+    record.bonus_pay = Math.max(0, record.gross_pay - record.regular_pay - record.overtime_pay);
+  }
+  record.calculated_net = record.net_pay;
+  return true;
+}
+
+async function savePaystubEdit(row, field, rawValue) {
+  const next = { ...row };
+  const config = PAYSTUB_EDIT_FIELDS[field];
+  if (config.type === "period") {
+    const period = parsePaystubPeriod(rawValue);
+    if (!period) throw new Error("Use YYYY-MM-DD to YYYY-MM-DD, or leave the pay period blank.");
+    Object.assign(next, period);
+  } else if (config.type === "text") {
+    const value = String(rawValue || "").trim().slice(0, 80);
+    if (!value) throw new Error("Pay type cannot be blank.");
+    next[field] = value;
+    if (field === "payment_type" && isManualIncome(next)) {
+      next.pay_type = `Manual: ${value.split("·")[0].trim() || value}`;
+    }
+  } else if (config.type === "date") {
+    const value = String(rawValue || "");
+    if (!value || Number.isNaN(dateValue(value).valueOf())) throw new Error("Choose a valid pay date.");
+    next[field] = value;
+    next.year = Number(value.slice(0, 4));
+  } else {
+    const value = Number(rawValue);
+    if (!Number.isFinite(value) || value < 0) throw new Error(`${config.label} must be zero or greater.`);
+    next[field] = Math.round(value * 100) / 100;
+    if (!recalculateEditedPaystub(next, field)) throw new Error("Taxes and deductions cannot be greater than gross pay.");
+  }
+
+  const response = await fetch(`/api/paystubs/${row._record_id}`, {
+    method: "PATCH",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ record: next }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.message || "The pay statement could not be updated.");
+  state.allRows = state.allRows.map((item) =>
+    Number(item._record_id) === Number(row._record_id) ? payload.record : item,
+  );
+  populateFilterOptions();
+  applyFilters();
+}
+
+function beginPaystubFieldEdit(event) {
+  if (event.target.closest("button")) return;
+  const cell = event.target.closest("[data-edit-paystub-field]");
+  if (!cell || cell.querySelector("input")) return;
+  const row = state.allRows.find((item) => Number(item._record_id) === Number(cell.dataset.paystubId));
+  if (!row) return;
+  const field = cell.dataset.editPaystubField;
+  const config = PAYSTUB_EDIT_FIELDS[field];
+  const editor = document.createElement("input");
+  editor.className = "paystub-inline-editor";
+  editor.setAttribute("aria-label", `${config.label} for ${formatDate(row.pay_date)}`);
+  if (config.type === "date") {
+    editor.type = "date";
+    editor.value = row.pay_date;
+  } else if (config.type === "period") {
+    editor.type = "text";
+    editor.placeholder = "YYYY-MM-DD to YYYY-MM-DD";
+    editor.value = paystubPeriodValue(row);
+  } else if (config.type === "number") {
+    editor.type = "number";
+    editor.min = "0";
+    editor.step = config.step;
+    editor.inputMode = "decimal";
+    editor.value = Number(row[field] || 0).toFixed(2);
+  } else {
+    editor.type = "text";
+    editor.maxLength = 80;
+    editor.value = String(row[field] || row.pay_type || "Payroll");
+  }
+  cell.classList.add("is-editing");
+  cell.replaceChildren(editor);
+  editor.focus();
+  if (editor.type !== "date") editor.select();
+
+  let finished = false;
+  const finish = async (save) => {
+    if (finished) return;
+    finished = true;
+    if (!save) {
+      renderTable(state.filteredRows);
+      return;
+    }
+    editor.disabled = true;
+    try {
+      await savePaystubEdit(row, field, editor.value);
+      showToast(`${config.label} was updated.`);
+    } catch (error) {
+      renderTable(state.filteredRows);
+      showToast(error.message);
+    }
+  };
+  editor.addEventListener("blur", () => finish(true), { once: true });
+  editor.addEventListener("keydown", (keyboardEvent) => {
+    if (keyboardEvent.key === "Enter") {
+      keyboardEvent.preventDefault();
+      finish(true);
+    } else if (keyboardEvent.key === "Escape") {
+      keyboardEvent.preventDefault();
+      finish(false);
+    }
+  });
+}
+
+function handlePaystubTableKeydown(event) {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const cell = event.target.closest("[data-edit-paystub-field]");
+  if (!cell || cell.querySelector("input")) return;
+  event.preventDefault();
+  beginPaystubFieldEdit(event);
+}
+
+async function removePaystub(row) {
+  const response = await fetch(`/api/paystubs/${row._record_id}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.message || "The pay statement could not be removed.");
+  state.allRows = state.allRows.filter((item) => Number(item._record_id) !== Number(row._record_id));
+  state.paystubDeleteConfirmId = null;
+  populateFilterOptions();
+  applyFilters();
+}
+
 function renderTable(rows) {
   const ordered = sortedRows(rows);
   const pageCount = Math.max(1, Math.ceil(ordered.length / state.pageSize));
@@ -2017,28 +2197,33 @@ function renderTable(rows) {
   const pageRows = ordered.slice(start, start + state.pageSize);
 
   el("payTableBody").innerHTML = pageRows
-    .map(
-      (row) => `
-        <tr>
-          <td data-label="Pay date">${escapeHtml(formatDate(row.pay_date))}</td>
-          <td data-label="Pay period">${
+    .map((row) => {
+      const editableClass = row._record_id ? " paystub-editable-cell" : "";
+      const confirmingDelete = Number(state.paystubDeleteConfirmId) === Number(row._record_id);
+      return `
+        <tr data-paystub-row="${Number(row._record_id) || ""}">
+          <td class="${editableClass}" data-label="Pay date" ${paystubEditAttributes(row, "pay_date")}>${escapeHtml(formatDate(row.pay_date))}</td>
+          <td class="${editableClass}" data-label="Pay period" ${paystubEditAttributes(row, "pay_period")}>${
             row.period_begin && row.period_end
               ? `${escapeHtml(formatDate(row.period_begin, true))} – ${escapeHtml(formatDate(row.period_end, true))}`
               : "Not applicable"
           }</td>
-          <td data-label="Pay type"><span class="pay-type">${escapeHtml(row.payment_type || row.pay_type || "Payroll")}</span></td>
-          <td class="number" data-label="Hours">${number.format(row.hours_units)}</td>
-          <td class="number" data-label="OT hours">${number.format(Number(row.overtime_hours) || 0)}</td>
-          <td class="number" data-label="Rate">${currency.format(row.regular_rate)}</td>
-          <td class="number" data-label="Gross">${currency.format(row.gross_pay)}</td>
-          <td class="number" data-label="Taxes">${currency.format(row.total_taxes)}</td>
-          <td class="number" data-label="Deductions">${currency.format(row.total_deductions)}</td>
-          <td class="number net-cell" data-label="Net pay">${currency.format(row.net_pay)}</td>
-          <td class="paycheck-actions" data-label="Calculator">
-            <button type="button" data-use-paycheck="${state.allRows.indexOf(row)}" aria-label="Use ${escapeHtml(formatDate(row.pay_date))} paycheck in expense calculator" title="Use this paycheck in Tools">Tools</button>
+          <td class="${editableClass}" data-label="Pay type" ${paystubEditAttributes(row, "payment_type")}><span class="pay-type">${escapeHtml(row.payment_type || row.pay_type || "Payroll")}</span></td>
+          <td class="number${editableClass}" data-label="Hours" ${paystubEditAttributes(row, "hours_units")}>${number.format(row.hours_units)}</td>
+          <td class="number${editableClass}" data-label="OT hours" ${paystubEditAttributes(row, "overtime_hours")}>${number.format(Number(row.overtime_hours) || 0)}</td>
+          <td class="number${editableClass}" data-label="Rate" ${paystubEditAttributes(row, "regular_rate")}>${currency.format(row.regular_rate)}</td>
+          <td class="number${editableClass}" data-label="Gross" ${paystubEditAttributes(row, "gross_pay")}>${currency.format(row.gross_pay)}</td>
+          <td class="number${editableClass}" data-label="Taxes" ${paystubEditAttributes(row, "total_taxes")}>${currency.format(row.total_taxes)}</td>
+          <td class="number${editableClass}" data-label="Deductions" ${paystubEditAttributes(row, "total_deductions")}>${currency.format(row.total_deductions)}</td>
+          <td class="number net-cell${editableClass}" data-label="Net pay" ${paystubEditAttributes(row, "net_pay")}>${currency.format(row.net_pay)}</td>
+          <td class="paycheck-actions" data-label="Actions">
+            <div class="paycheck-action-group">
+              <button type="button" data-use-paycheck="${Number(row._record_id)}" aria-label="Use ${escapeHtml(formatDate(row.pay_date))} paycheck in expense calculator" title="Use this paycheck in Tools">Tools</button>
+              <button class="paystub-remove-button${confirmingDelete ? " is-confirming" : ""}" type="button" data-delete-paystub="${Number(row._record_id)}" aria-label="${confirmingDelete ? "Confirm removal of" : "Remove"} ${escapeHtml(formatDate(row.pay_date))} pay statement">${confirmingDelete ? "Confirm" : "Remove"}</button>
+            </div>
           </td>
-        </tr>`,
-    )
+        </tr>`;
+    })
     .join("");
 
   const shownStart = rows.length ? start + 1 : 0;
@@ -2152,6 +2337,7 @@ function updateDashboard() {
 }
 
 function populateFilterOptions() {
+  const selectedYear = el("yearFilter").value;
   const years = [
     ...new Set(state.allRows.map((row) => String(row.year || row.pay_date.slice(0, 4)))),
   ].sort();
@@ -2159,6 +2345,7 @@ function populateFilterOptions() {
     '<option value="all">All years</option>',
     ...years.map((year) => `<option value="${escapeHtml(year)}">${escapeHtml(year)}</option>`),
   ].join("");
+  if (years.includes(selectedYear)) el("yearFilter").value = selectedYear;
 
   const dates = state.allRows.map((row) => row.pay_date).filter(Boolean).sort();
   if (dates.length) {
@@ -2834,11 +3021,42 @@ function bindEvents() {
     state.page += 1;
     renderTable(state.filteredRows);
   });
-  el("payTableBody").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-use-paycheck]");
-    if (!button) return;
-    const row = state.allRows[Number(button.dataset.usePaycheck)];
-    if (row) loadPayStatementIntoTools(row);
+  el("payTableBody").addEventListener("dblclick", beginPaystubFieldEdit);
+  el("payTableBody").addEventListener("keydown", handlePaystubTableKeydown);
+  el("payTableBody").addEventListener("click", async (event) => {
+    const toolsButton = event.target.closest("[data-use-paycheck]");
+    if (toolsButton) {
+      const row = state.allRows.find(
+        (item) => Number(item._record_id) === Number(toolsButton.dataset.usePaycheck),
+      );
+      if (row) loadPayStatementIntoTools(row);
+      return;
+    }
+    const removeButton = event.target.closest("[data-delete-paystub]");
+    if (removeButton) {
+      const row = state.allRows.find(
+        (item) => Number(item._record_id) === Number(removeButton.dataset.deletePaystub),
+      );
+      if (!row) return;
+      if (Number(state.paystubDeleteConfirmId) !== Number(row._record_id)) {
+        state.paystubDeleteConfirmId = row._record_id;
+        renderTable(state.filteredRows);
+        showToast("Select Confirm to permanently remove this pay statement.");
+        return;
+      }
+      removeButton.disabled = true;
+      try {
+        await removePaystub(row);
+        showToast(`${formatDate(row.pay_date)} pay statement was removed.`);
+      } catch (error) {
+        removeButton.disabled = false;
+        showToast(error.message);
+      }
+      return;
+    }
+    if (window.matchMedia("(hover: none), (pointer: coarse), (max-width: 760px)").matches) {
+      beginPaystubFieldEdit(event);
+    }
   });
 
   document.querySelectorAll("th button[data-sort]").forEach((button) => {
@@ -2880,10 +3098,12 @@ if (typeof module !== "undefined" && module.exports) {
     monthlyExpenseAmount,
     normalizeExpenseAmount,
     normalizeCSVHeader,
+    parsePaystubPeriod,
     parseCSV,
     projectedPayDates,
     projectedPayDatesForMonth,
     recurringManualIncome,
+    recalculateEditedPaystub,
     reorderExpenses,
     totalGoalContribution,
   };
