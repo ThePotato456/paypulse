@@ -83,7 +83,7 @@
         <div class="header-actions">
           <span class="privacy-chip">
             <span class="status-dot" aria-hidden="true"></span>
-            Private browser analysis
+            Encrypted financial vault
           </span>
           <span id="accountChip" class="account-chip"><strong id="accountUsername">—</strong><small id="accountRole">member</small></span>
           <button id="manualEntryButton" class="button button-secondary" type="button">
@@ -105,6 +105,7 @@
             Import CSV
           </label>
           <input id="csvUpload" type="file" accept=".csv,text/csv" hidden />
+          <button id="changePasswordButton" class="account-logout" type="button">Change password</button>
           <button id="logoutButton" class="account-logout" type="button">Sign out</button>
         </div>
       </div>
@@ -998,9 +999,42 @@
       </form>
     </div>
 
+    <div id="passwordModal" class="modal" hidden>
+      <button class="modal-backdrop" type="button" data-close-password aria-label="Close password dialog"></button>
+      <form id="passwordForm" class="modal-card password-modal-card" role="dialog" aria-modal="true" aria-labelledby="passwordTitle">
+        <div class="modal-header">
+          <div>
+            <p class="panel-kicker">ENCRYPTED VAULT</p>
+            <h2 id="passwordTitle">Change password</h2>
+            <p id="passwordDescription">Your vault key will be rewrapped without re-encrypting every record.</p>
+          </div>
+          <button id="closePassword" class="modal-close" type="button" aria-label="Close dialog">×</button>
+        </div>
+        <div class="ingest-body">
+          <div id="currentPasswordField" class="field">
+            <label for="currentPassword">Current password</label>
+            <input id="currentPassword" type="password" minlength="10" maxlength="128" autocomplete="current-password" />
+          </div>
+          <div class="field">
+            <label for="newPassword">New password</label>
+            <input id="newPassword" type="password" minlength="10" maxlength="128" autocomplete="new-password" required />
+          </div>
+          <div class="field">
+            <label for="confirmNewPassword">Confirm new password</label>
+            <input id="confirmNewPassword" type="password" minlength="10" maxlength="128" autocomplete="new-password" required />
+          </div>
+          <div id="passwordResult" class="ingest-result is-error" role="alert" hidden></div>
+        </div>
+        <div class="modal-actions">
+          <p id="passwordNotice">Changing your password signs out every active session.</p>
+          <button id="savePassword" class="button button-primary" type="submit">Change password</button>
+        </div>
+      </form>
+    </div>
+
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
     <script src="vendor/chart.umd.min.js"></script>
-    <script src="app.js?v=20260808-pay-history-edit"></script>
+    <script src="app.js?v=20260808-encrypted-vault"></script>
   </body>
 </html>

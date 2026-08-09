@@ -19,7 +19,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from database import PayPulseDatabase, SESSION_SECONDS, load_legacy_paystubs
+from database import PayPulseDatabase, SESSION_SECONDS, VaultError, load_legacy_paystubs
 from ingestion import IngestionError, parse_pdf
 
 
@@ -340,6 +340,7 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
                     "database": True,
                     "payroll_import": True,
                     "manual_income": True,
+                    "encrypted_financial_storage": True,
                 },
             )
             return
@@ -359,22 +360,33 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
             session = self._require_user()
             if not session:
                 return
-            self._send_json(
-                HTTPStatus.OK,
-                {"status": "ok", "paystubs": DATABASE.list_paystubs(int(session[0]["id"]))},
-            )
+            try:
+                self._send_json(
+                    HTTPStatus.OK,
+                    {
+                        "status": "ok",
+                        "paystubs": DATABASE.list_paystubs(
+                            int(session[0]["id"]), session[2]
+                        ),
+                    },
+                )
+            except VaultError as exc:
+                self._send_json(HTTPStatus.CONFLICT, {"status": "vault_error", "message": str(exc)})
             return
         if request_path == "/api/planner":
             session = self._require_user()
             if not session:
                 return
-            persisted, planner = DATABASE.get_planner(
-                int(session[0]["id"]), normalize_planner(DEFAULT_PLANNER)
-            )
-            self._send_json(
-                HTTPStatus.OK,
-                {"status": "ok", "persisted": persisted, "planner": planner},
-            )
+            try:
+                persisted, planner = DATABASE.get_planner(
+                    int(session[0]["id"]), normalize_planner(DEFAULT_PLANNER), session[2]
+                )
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"status": "ok", "persisted": persisted, "planner": planner},
+                )
+            except VaultError as exc:
+                self._send_json(HTTPStatus.CONFLICT, {"status": "vault_error", "message": str(exc)})
             return
         if request_path == "/api/users":
             session = self._require_user(admin=True)
@@ -397,9 +409,9 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
         try:
             payload = self._read_json_body()
             planner = normalize_planner(payload)
-            DATABASE.set_planner(int(session[0]["id"]), planner)
+            DATABASE.set_planner(int(session[0]["id"]), planner, session[2])
             self._send_json(HTTPStatus.OK, {"status": "ok", "planner": planner})
-        except ValueError as exc:
+        except (ValueError, VaultError) as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)})
         except OSError:
             self._send_json(
@@ -416,7 +428,7 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
             self._login()
             return
         if request_path == "/api/auth/logout":
-            session = self._require_user(csrf=True)
+            session = self._require_user(csrf=True, allow_password_change=True)
             if not session:
                 return
             DATABASE.delete_session(self._session_token())
@@ -425,6 +437,29 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
                 {"status": "ok"},
                 cookie="paypulse_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
             )
+            return
+        if request_path == "/api/auth/password":
+            session = self._require_user(csrf=True, allow_password_change=True)
+            if not session:
+                return
+            try:
+                payload = self._read_json_body()
+                if not isinstance(payload, dict):
+                    raise ValueError("Password data must be a JSON object.")
+                DATABASE.change_password(
+                    int(session[0]["id"]),
+                    payload.get("current_password"),
+                    payload.get("new_password"),
+                    session[2],
+                    session[3],
+                )
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"status": "ok", "reauthenticate": True},
+                    cookie="paypulse_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
+                )
+            except (ValueError, VaultError) as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)})
             return
         if request_path == "/api/users":
             session = self._require_user(admin=True, csrf=True)
@@ -435,10 +470,36 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
                 if not isinstance(payload, dict):
                     raise ValueError("User data must be a JSON object.")
                 user = DATABASE.register_user(
-                    payload.get("username"), payload.get("password"), role=str(payload.get("role", "member"))
+                    payload.get("username"),
+                    payload.get("password"),
+                    role=str(payload.get("role", "member")),
+                    require_password_change=True,
                 )
                 self._send_json(HTTPStatus.CREATED, {"status": "ok", "user": user})
-            except ValueError as exc:
+            except (ValueError, VaultError) as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)})
+            return
+        reset_match = re.fullmatch(r"/api/users/(\d+)/reset-password", request_path)
+        if reset_match:
+            session = self._require_user(csrf=True, owner=True)
+            if not session:
+                return
+            try:
+                payload = self._read_json_body()
+                if not isinstance(payload, dict):
+                    raise ValueError("Password reset data must be a JSON object.")
+                user = DATABASE.reset_password(
+                    int(session[0]["id"]),
+                    int(reset_match.group(1)),
+                    payload.get("temporary_password"),
+                    session[3],
+                )
+                self._send_json(HTTPStatus.OK, {"status": "ok", "user": user})
+            except PermissionError as exc:
+                self._send_json(HTTPStatus.FORBIDDEN, {"status": "error", "message": str(exc)})
+            except LookupError as exc:
+                self._send_json(HTTPStatus.NOT_FOUND, {"status": "error", "message": str(exc)})
+            except (ValueError, VaultError) as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)})
             return
         if request_path == "/api/paystubs/import":
@@ -450,10 +511,10 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
                 if not isinstance(payload, dict) or not isinstance(payload.get("records"), list):
                     raise ValueError("Payroll import data must contain a records list.")
                 result = DATABASE.add_paystub_records(
-                    int(session[0]["id"]), payload["records"]
+                    int(session[0]["id"]), payload["records"], session[2]
                 )
                 self._send_json(HTTPStatus.OK, result)
-            except ValueError as exc:
+            except (ValueError, VaultError) as exc:
                 self._send_json(
                     HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)}
                 )
@@ -464,10 +525,12 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
                 return
             try:
                 record = normalize_manual_income(self._read_json_body())
-                result = DATABASE.add_paystub_records(int(session[0]["id"]), [record])
+                result = DATABASE.add_paystub_records(
+                    int(session[0]["id"]), [record], session[2]
+                )
                 result["record"] = record
                 self._send_json(HTTPStatus.OK, result)
-            except ValueError as exc:
+            except (ValueError, VaultError) as exc:
                 self._send_json(
                     HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)}
                 )
@@ -487,7 +550,9 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
                 temporary_path = Path(temporary.name)
             try:
                 statements = parse_pdf(temporary_path)
-                result = DATABASE.add_statements(int(session[0]["id"]), statements)
+                result = DATABASE.add_statements(
+                    int(session[0]["id"]), statements, session[2]
+                )
             finally:
                 temporary_path.unlink(missing_ok=True)
 
@@ -498,7 +563,7 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
                 HTTPStatus.UNPROCESSABLE_ENTITY,
                 {"status": "error", "message": str(exc)},
             )
-        except ValueError as exc:
+        except (ValueError, VaultError) as exc:
             self._send_json(
                 HTTPStatus.BAD_REQUEST,
                 {"status": "error", "message": str(exc)},
@@ -524,12 +589,15 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
                 if not isinstance(payload, dict) or not isinstance(payload.get("record"), dict):
                     raise ValueError("Pay statement data must contain a record object.")
                 record = DATABASE.update_paystub_record(
-                    int(session[0]["id"]), int(paystub_match.group(1)), payload["record"]
+                    int(session[0]["id"]),
+                    int(paystub_match.group(1)),
+                    payload["record"],
+                    session[2],
                 )
                 self._send_json(HTTPStatus.OK, {"status": "ok", "record": record})
             except LookupError as exc:
                 self._send_json(HTTPStatus.NOT_FOUND, {"status": "error", "message": str(exc)})
-            except ValueError as exc:
+            except (ValueError, VaultError) as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)})
             return
 
@@ -612,13 +680,19 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
                 legacy_planner=legacy_planner,
                 legacy_paystubs=legacy_paystubs,
             )
-            token, csrf_token = DATABASE.create_session(int(user["id"]))
+            unlocked = DATABASE.unlock_user(payload.get("username"), payload.get("password"))
+            if not unlocked:
+                raise VaultError("The new encrypted account could not be unlocked.")
+            user, vault_key, recovery_private = unlocked
+            token, csrf_token = DATABASE.create_session(
+                int(user["id"]), vault_key, recovery_private
+            )
             self._send_json(
                 HTTPStatus.CREATED,
                 {"status": "ok", "user": user, "csrf_token": csrf_token},
                 cookie=self._session_cookie(token),
             )
-        except ValueError as exc:
+        except (ValueError, VaultError) as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)})
 
     def _login(self) -> None:
@@ -626,20 +700,23 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
             payload = self._read_json_body()
             if not isinstance(payload, dict):
                 raise ValueError("Login data must be a JSON object.")
-            user = DATABASE.authenticate(payload.get("username"), payload.get("password"))
-            if not user:
+            unlocked = DATABASE.unlock_user(payload.get("username"), payload.get("password"))
+            if not unlocked:
                 self._send_json(
                     HTTPStatus.UNAUTHORIZED,
                     {"status": "error", "message": "Username or password is incorrect."},
                 )
                 return
-            token, csrf_token = DATABASE.create_session(int(user["id"]))
+            user, vault_key, recovery_private = unlocked
+            token, csrf_token = DATABASE.create_session(
+                int(user["id"]), vault_key, recovery_private
+            )
             self._send_json(
                 HTTPStatus.OK,
                 {"status": "ok", "user": user, "csrf_token": csrf_token},
                 cookie=self._session_cookie(token),
             )
-        except ValueError as exc:
+        except (ValueError, VaultError) as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)})
 
     def _session_token(self) -> str | None:
@@ -651,12 +728,19 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
         morsel = cookie.get("paypulse_session")
         return morsel.value if morsel else None
 
-    def _current_session(self) -> tuple[dict[str, object], str] | None:
+    def _current_session(
+        self,
+    ) -> tuple[dict[str, object], str, bytes | None, bytes | None] | None:
         return DATABASE.session_user(self._session_token())
 
     def _require_user(
-        self, *, admin: bool = False, csrf: bool = False
-    ) -> tuple[dict[str, object], str] | None:
+        self,
+        *,
+        admin: bool = False,
+        owner: bool = False,
+        csrf: bool = False,
+        allow_password_change: bool = False,
+    ) -> tuple[dict[str, object], str, bytes, bytes | None] | None:
         session = self._current_session()
         if not session:
             self._send_json(
@@ -664,11 +748,36 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
                 {"status": "error", "message": "Sign in to continue."},
             )
             return None
-        user, csrf_token = session
+        user, csrf_token = session[0], session[1]
+        if session[2] is None:
+            self._send_json(
+                HTTPStatus.LOCKED,
+                {
+                    "status": "locked",
+                    "message": "Your financial vault is locked. Sign in with your password again.",
+                    "reauthenticate": True,
+                },
+            )
+            return None
+        if user["must_change_password"] and not allow_password_change:
+            self._send_json(
+                HTTPStatus.FORBIDDEN,
+                {
+                    "status": "password_change_required",
+                    "message": "Choose a new password before opening your financial vault.",
+                },
+            )
+            return None
         if admin and user["role"] != "admin":
             self._send_json(
                 HTTPStatus.FORBIDDEN,
                 {"status": "error", "message": "Administrator access is required."},
+            )
+            return None
+        if owner and not user["is_owner"]:
+            self._send_json(
+                HTTPStatus.FORBIDDEN,
+                {"status": "error", "message": "Recovery owner access is required."},
             )
             return None
         if csrf and not hmac.compare_digest(

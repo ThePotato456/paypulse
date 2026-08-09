@@ -119,6 +119,8 @@ const state = {
   csrfToken: "",
   appStarted: false,
   users: [],
+  passwordResetUserId: null,
+  passwordChangeForced: false,
   charts: {},
 };
 
@@ -2696,7 +2698,7 @@ function applyAuthSession(user, csrfToken) {
   state.authUser = user;
   state.csrfToken = csrfToken;
   el("accountUsername").textContent = user.username;
-  el("accountRole").textContent = user.role;
+  el("accountRole").textContent = user.is_owner ? "owner" : user.role;
   document.body.classList.remove("auth-pending", "auth-required");
   document.body.classList.add("auth-ready");
   el("userManagementPanel").hidden = user.role !== "admin";
@@ -2716,7 +2718,8 @@ async function submitAuthForm(endpoint, credentials, submitButton) {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.message || "Account access failed.");
     applyAuthSession(payload.user, payload.csrf_token);
-    await startApplication();
+    if (payload.user.must_change_password) openPasswordModal({ forced: true });
+    else await startApplication();
   } catch (error) {
     el("authMessage").textContent = error.message;
   } finally {
@@ -2731,6 +2734,7 @@ async function restoreAuthSession() {
     const payload = await response.json();
     if (response.ok && payload.authenticated) {
       applyAuthSession(payload.user, payload.csrf_token);
+      if (payload.user.must_change_password) openPasswordModal({ forced: true });
       return true;
     }
   } catch {
@@ -2753,6 +2757,7 @@ function renderUsers() {
   el("usersTableBody").innerHTML = state.users
     .map((user) => {
       const isCurrent = user.id === state.authUser.id;
+      const canRecover = state.authUser.is_owner && !user.is_owner;
       const username = escapeHtml(user.username);
       const created = new Date(user.created_at * 1000).toLocaleDateString("en-US", {
         month: "short",
@@ -2761,19 +2766,20 @@ function renderUsers() {
       });
       return `
         <tr>
-          <td data-label="User"><strong>${username}</strong>${isCurrent ? '<span class="user-current-label">You</span>' : ""}</td>
+          <td data-label="User"><strong>${username}</strong>${isCurrent ? '<span class="user-current-label">You</span>' : ""}${user.is_owner ? '<span class="user-current-label">Recovery owner</span>' : ""}</td>
           <td data-label="Role">
-            <select class="user-role-select" data-user-role="${user.id}" aria-label="Role for ${username}" ${isCurrent ? "disabled" : ""}>
-              <option value="member" ${user.role === "member" ? "selected" : ""}>Member</option>
-              <option value="admin" ${user.role === "admin" ? "selected" : ""}>Administrator</option>
-            </select>
+              <select class="user-role-select" data-user-role="${user.id}" aria-label="Role for ${username}" ${isCurrent || user.is_owner ? "disabled" : ""}>
+                <option value="member" ${user.role === "member" ? "selected" : ""}>Member</option>
+                <option value="admin" ${user.role === "admin" ? "selected" : ""}>Administrator</option>
+              </select>${user.encryption_migrated ? "" : '<small class="user-current-label">Migration pending</small>'}
           </td>
           <td data-label="Status"><span class="user-status ${user.active ? "" : "is-inactive"}">${user.active ? "Active" : "Inactive"}</span></td>
           <td class="number" data-label="Pay statements">${number.format(user.paystub_count || 0)}</td>
           <td data-label="Created">${escapeHtml(created)}</td>
           <td class="record-actions" data-label="Actions">
-            <button type="button" data-toggle-user="${user.id}" data-user-active="${user.active}" ${isCurrent ? "disabled" : ""}>${user.active ? "Deactivate" : "Activate"}</button>
-            <button type="button" data-delete-user="${user.id}" ${isCurrent ? "disabled" : ""}>Delete</button>
+            <button type="button" data-toggle-user="${user.id}" data-user-active="${user.active}" ${isCurrent || user.is_owner ? "disabled" : ""}>${user.active ? "Deactivate" : "Activate"}</button>
+            ${canRecover ? `<button type="button" data-reset-password="${user.id}">Reset password</button>` : ""}
+            <button type="button" data-delete-user="${user.id}" ${isCurrent || user.is_owner ? "disabled" : ""}>Delete</button>
           </td>
         </tr>`;
     })
@@ -2836,8 +2842,12 @@ async function handleUsersTableChange(event) {
 async function handleUsersTableClick(event) {
   const toggle = event.target.closest("[data-toggle-user]");
   const remove = event.target.closest("[data-delete-user]");
+  const reset = event.target.closest("[data-reset-password]");
   try {
-    if (toggle) {
+    if (reset) {
+      const user = state.users.find((item) => item.id === Number(reset.dataset.resetPassword));
+      openPasswordModal({ targetUser: user });
+    } else if (toggle) {
       await updateManagedUser(Number(toggle.dataset.toggleUser), {
         active: toggle.dataset.userActive !== "true",
       });
@@ -2856,6 +2866,87 @@ async function handleUsersTableClick(event) {
     }
   } catch (error) {
     showToast(error.message);
+  }
+}
+
+function openPasswordModal({ targetUser = null, forced = false } = {}) {
+  state.passwordResetUserId = targetUser?.id || null;
+  state.passwordChangeForced = forced;
+  el("passwordForm").reset();
+  el("passwordResult").hidden = true;
+  el("currentPasswordField").hidden = Boolean(targetUser);
+  el("currentPassword").required = !targetUser;
+  el("passwordTitle").textContent = targetUser
+    ? `Reset ${targetUser.username}'s password`
+    : forced
+      ? "Protect your vault with a new password"
+      : "Change password";
+  el("passwordDescription").textContent = targetUser
+    ? "The recovery key will rewrap this user's vault under a temporary password."
+    : "Your vault key will be rewrapped without re-encrypting every record.";
+  el("passwordNotice").textContent = targetUser
+    ? "The user must replace this temporary password at their next sign-in."
+    : "Changing your password signs out every active session.";
+  el("savePassword").textContent = targetUser ? "Set temporary password" : "Change password";
+  el("closePassword").hidden = forced;
+  document.querySelector("[data-close-password]").disabled = forced;
+  el("passwordModal").hidden = false;
+  document.body.classList.add("modal-open");
+  window.setTimeout(() => el(targetUser ? "newPassword" : "currentPassword").focus(), 0);
+}
+
+function closePasswordModal() {
+  if (state.passwordChangeForced) return;
+  el("passwordModal").hidden = true;
+  document.body.classList.remove("modal-open");
+  state.passwordResetUserId = null;
+  el("changePasswordButton").focus();
+}
+
+async function submitPasswordForm(event) {
+  event.preventDefault();
+  const result = el("passwordResult");
+  const nextPassword = el("newPassword").value;
+  if (nextPassword !== el("confirmNewPassword").value) {
+    result.textContent = "New passwords do not match.";
+    result.hidden = false;
+    return;
+  }
+  const button = el("savePassword");
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = "Securing…";
+  result.hidden = true;
+  try {
+    const isReset = Boolean(state.passwordResetUserId);
+    const endpoint = isReset
+      ? `/api/users/${state.passwordResetUserId}/reset-password`
+      : "/api/auth/password";
+    const body = isReset
+      ? { temporary_password: nextPassword }
+      : { current_password: el("currentPassword").value, new_password: nextPassword };
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.message || "The password could not be changed.");
+    if (isReset) {
+      const user = state.users.find((item) => item.id === state.passwordResetUserId);
+      closePasswordModal();
+      await loadUsers();
+      showToast(`${user?.username || "User"} now has a temporary password.`);
+    } else {
+      window.alert("Password changed. Sign in again to unlock your vault.");
+      window.location.reload();
+    }
+  } catch (error) {
+    result.textContent = error.message;
+    result.hidden = false;
+  } finally {
+    button.disabled = false;
+    button.textContent = originalLabel;
   }
 }
 
@@ -2883,6 +2974,10 @@ function bindAuthEvents() {
     );
   });
   el("logoutButton").addEventListener("click", logout);
+  el("changePasswordButton").addEventListener("click", () => openPasswordModal());
+  el("passwordForm").addEventListener("submit", submitPasswordForm);
+  el("closePassword").addEventListener("click", closePasswordModal);
+  document.querySelector("[data-close-password]").addEventListener("click", closePasswordModal);
 }
 
 async function startApplication() {
@@ -3113,7 +3208,9 @@ if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", async () => {
     try {
       bindAuthEvents();
-      if (await restoreAuthSession()) await startApplication();
+      if (await restoreAuthSession()) {
+        if (!state.authUser.must_change_password) await startApplication();
+      }
     } catch (error) {
       console.error(error);
       if (state.authUser) showToast(error.message);

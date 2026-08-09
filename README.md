@@ -8,7 +8,7 @@ Turn sanitized pay history into clear trends, forecasts, expense plans, and savi
 
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Chart.js 4.5.1](https://img.shields.io/badge/Chart.js-4.5.1-FF6384?style=flat-square&logo=chartdotjs&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-31%20passing-10A58F?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-37%20passing-10A58F?style=flat-square)
 ![Deployment](https://img.shields.io/badge/deployment-self--hosted-183A5A?style=flat-square)
 ![Privacy](https://img.shields.io/badge/privacy-local--first-087C6D?style=flat-square)
 
@@ -23,7 +23,7 @@ Turn sanitized pay history into clear trends, forecasts, expense plans, and savi
 
 PayPulse is a local payroll dashboard for understanding how earnings, taxes, deductions, hours, and take-home pay change over time. It combines an interactive browser experience with a small Python server that handles durable planner storage and privacy-conscious PDF paystub ingestion.
 
-The dashboard ships with a locally bundled copy of Chart.js and makes no external application requests. Accounts, sessions, payroll records, allocations, expenses, and savings goals are stored per user in a local SQLite database.
+The dashboard ships with a locally bundled copy of Chart.js and makes no external application requests. Accounts and sessions are stored in local SQLite; payroll records, allocations, expenses, and savings goals are stored there as authenticated ciphertext in a password-unlocked financial vault.
 
 ## Highlights
 
@@ -35,8 +35,8 @@ The dashboard ships with a locally bundled copy of Chart.js and makes no externa
 | **Data quality** | Reconciliation checks, duplicate signatures, required-field coverage, and unusual pay-cadence detection |
 | **History** | Searchable, sortable, paginated, inline-editable pay statements with row removal and filtered CSV export |
 | **Ingestion** | PDF extraction, reconciliation, duplicate protection, and account-scoped SQLite storage |
-| **Accounts** | Local registration, salted password hashing, expiring sessions, CSRF protection, and an admin user panel |
-| **Privacy** | Local processing, per-user records, no external analytics, and no cloud account requirement |
+| **Accounts** | Local registration, password-unlocked vaults, expiring sessions, owner recovery, CSRF protection, and an admin user panel |
+| **Privacy** | AES-256-GCM financial storage, local processing, per-user records, no external analytics, and no cloud account requirement |
 
 ## Feature tour
 
@@ -80,7 +80,8 @@ flowchart LR
     INGEST --> CHECKS["Reconciliation and duplicate checks"]
     CHECKS --> API["Authenticated Python API"]
     UI["Browser dashboard"] <--> API
-    API --> DB["SQLite: users, sessions, paystubs, planners"]
+    API --> VAULT["Password-unlocked keys in process memory"]
+    VAULT --> DB["SQLite: accounts and encrypted financial payloads"]
     LEGACY["Legacy CSV / planner JSON"] -. first-account import .-> DB
 ```
 
@@ -148,7 +149,9 @@ The command-line CSV append path remains available for legacy workflows while mi
 
 ## Accounts and persistent data
 
-The local server stores each account’s pay statements and validated planner document in `data/paypulse.db`. Passwords use salted PBKDF2-SHA256 hashes; raw passwords and session tokens are never stored. Sessions expire after seven days and state-changing authenticated requests require a CSRF token.
+The local server stores each account’s pay statements and validated planner document in `data/paypulse.db`. Each account has a random vault key; AES-256-GCM encrypts every paystub and planner document, scrypt derives the password-wrapping key, and the original owner’s password protects the private recovery key. Password authentication still uses salted PBKDF2-SHA256 hashes. Raw passwords, plaintext vault keys, and raw session tokens are never stored.
+
+Vault keys exist only in server process memory after a password login. Sessions expire after seven days, but restarting the server invalidates every session and requires the password again. State-changing authenticated requests require a CSRF token.
 
 The first registered user becomes an administrator and receives records from the legacy CSV and planner JSON when those files exist. Later accounts start with isolated, empty payroll and planner records. Administrators can create accounts, assign roles, activate or deactivate users, view stored statement counts, and delete users from the Tools workspace.
 
@@ -183,7 +186,8 @@ python server.py [--host HOST] [--port PORT] [--database PATH] [--csv PATH] [--p
 | `GET` | `/api/health` | Reports ingestion and planner availability |
 | `GET` | `/api/auth/session` | Restores the current cookie session |
 | `POST` | `/api/auth/register` | Creates a local account and session |
-| `POST` | `/api/auth/login`, `/api/auth/logout` | Starts or ends a session |
+| `POST` | `/api/auth/login`, `/api/auth/logout` | Unlocks or ends a vault session |
+| `POST` | `/api/auth/password` | Changes a password by rewrapping the vault key |
 | `GET` | `/api/paystubs` | Loads the signed-in user’s pay statements |
 | `POST` | `/api/paystubs/import` | Saves CSV payroll rows to the signed-in user's records |
 | `POST` | `/api/paystubs/manual` | Saves a validated manual paystub or income deposit |
@@ -193,6 +197,7 @@ python server.py [--host HOST] [--port PORT] [--database PATH] [--csv PATH] [--p
 | `POST` | `/api/ingest` | Processes a PDF into the signed-in user’s records |
 | `GET`, `POST` | `/api/users` | Lists or creates users as an administrator |
 | `PATCH`, `DELETE` | `/api/users/{id}` | Updates or deletes a user as an administrator |
+| `POST` | `/api/users/{id}/reset-password` | Resets an encrypted account as the recovery owner |
 
 Planner requests are limited to 128 KB, CSV imports to 4 MB or 10,000 statements, and PDF uploads to 15 MB.
 
@@ -207,16 +212,21 @@ Projections are planning estimates—not guaranteed income. Future schedules, ra
 - Payroll and planning data are not sent to an external application service.
 - Chart.js is bundled locally.
 - Uploaded PDFs are processed by the self-hosted server and deleted immediately afterward.
-- Only sanitized payroll fields are written to the database.
+- Only sanitized payroll fields enter the vault; financial payloads are encrypted with AES-256-GCM before SQLite persistence.
 - Direct identifiers are excluded from the dashboard and exported views.
 - Accounts and records are isolated by database user ID.
 - Passwords are salted and hashed with PBKDF2-SHA256.
+- Per-user vault keys are password-wrapped with scrypt-derived keys and recovery-wrapped to the owner’s public key.
+- Pay dates, duplicate signatures, paystub JSON, expenses, allocations, and savings goals are not stored as plaintext.
+- Legacy plaintext rows migrate transactionally on the user’s next login, followed by secure deletion, WAL truncation, and SQLite compaction.
 - Session identifiers are hashed in SQLite and sent in `HttpOnly`, `SameSite=Lax` cookies.
 - Authenticated writes require a per-session CSRF token.
 - The final active administrator cannot be deactivated, demoted, or deleted.
 - The server blocks direct HTTP access to the `data` directory and adds `X-Content-Type-Options: nosn` plus a no-referrer policy.
 
-Keep the default loopback binding unless you add HTTPS and appropriate network controls for remote access.
+This is encrypted-at-rest protection, not zero-knowledge encryption: the trusted running server decrypts data while servicing an unlocked session, and the recovery owner can reset another user’s password. Theft of SQLite or its backups does not reveal financial values without cracking a user or owner password. A compromised running server can read unlocked data.
+
+Keep the default loopback binding unless you add HTTPS and appropriate network controls for remote access. HTTPS is mandatory when passwords or financial responses cross a network.
 
 ## Testing
 
