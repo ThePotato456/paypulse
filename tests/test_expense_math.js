@@ -8,9 +8,11 @@ const {
   expenseAmountFromMonthly,
   expensePlan,
   moveExpenseByOffset,
+  monthlyIncomeFactor,
   monthlyExpenseAmount,
   monthlyPayPeriods,
   normalizeExpenseAmount,
+  recurringManualIncome,
   reorderExpenses,
 } = require("../app.js");
 
@@ -40,6 +42,56 @@ test("per-paycheck reserve exactly funds a calendar month", () => {
   assert.equal(plan.monthlyIncome, 1520.6);
   assert.equal(plan.expensePerPaycheck * plan.paychecksPerMonth, plan.monthlyTotal);
   assert.equal(plan.remaining, 760.3 - plan.expensePerPaycheck);
+});
+
+test("recurring manual deposits add calendar-month income", () => {
+  const rows = [
+    {
+      pay_date: "2026-07-01",
+      pay_type: "Manual: VA Disability",
+      income_type: "va-benefits",
+      income_frequency: "monthly",
+      net_pay: 1800,
+    },
+    {
+      pay_date: "2026-08-01",
+      pay_type: "Manual: VA Disability",
+      income_type: "va-benefits",
+      income_frequency: "monthly",
+      net_pay: 1850,
+    },
+    {
+      pay_date: "2026-08-03",
+      pay_type: "Manual: Reimbursement",
+      income_type: "other",
+      income_frequency: "one-time",
+      net_pay: 250,
+    },
+  ];
+
+  assert.equal(monthlyIncomeFactor("weekly"), 4);
+  assert.equal(monthlyIncomeFactor("biweekly"), 2);
+  assert.equal(monthlyIncomeFactor("semimonthly"), 2);
+  assert.equal(recurringManualIncome(rows), 1850);
+  assert.equal(
+    recurringManualIncome([
+      ...rows,
+      {
+        pay_date: "2026-08-08",
+        pay_type: "Manual: Employer paystub",
+        income_type: "paystub",
+        income_frequency: "biweekly",
+        net_pay: 900,
+      },
+    ]),
+    1850,
+  );
+
+  const plan = expensePlan([{ amount: 2000, frequency: "monthly" }], 760.3, 14, 1850);
+  assert.equal(plan.monthlyIncome, 3370.6);
+  assert.equal(plan.recurringMonthlyIncome, 1850);
+  assert.equal(plan.expensePerPaycheck, 75);
+  assert.equal(plan.remaining, 685.3);
 });
 
 test("inline expense edits accept positive currency amounts", () => {

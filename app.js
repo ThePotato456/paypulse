@@ -44,7 +44,10 @@ const TABLE_EXPORT_FIELDS = [
   ["pay_date", "Pay Date"],
   ["period_begin", "Period Begin"],
   ["period_end", "Period End"],
+  ["pay_type", "Income Source"],
   ["payment_type", "Pay Type"],
+  ["income_type", "Income Type"],
+  ["income_frequency", "Income Frequency"],
   ["hours_units", "Hours / Units"],
   ["regular_rate", "Regular Rate"],
   ["regular_hours", "Regular Hours"],
@@ -57,6 +60,13 @@ const TABLE_EXPORT_FIELDS = [
 const CSV_HEADER_ALIASES = new Map(
   TABLE_EXPORT_FIELDS.map(([field, label]) => [label.toLowerCase(), field]),
 );
+const MANUAL_INCOME_DEFAULTS = {
+  paystub: { source: "Paystub", frequency: "one-time" },
+  "va-benefits": { source: "VA Benefits", frequency: "monthly" },
+  "social-security": { source: "Social Security", frequency: "monthly" },
+  pension: { source: "Pension", frequency: "monthly" },
+  other: { source: "Other income", frequency: "one-time" },
+};
 
 function normalizeCSVHeader(header) {
   const cleaned = String(header).replace(/^\uFEFF/, "").trim();
@@ -85,6 +95,7 @@ const state = {
   filteredRows: [],
   sourceName: "Bundled paystubs.csv",
   pendingPdf: null,
+  manualSourceDefault: "Paystub",
   ingestionAvailable: null,
   sortKey: "pay_date",
   sortDirection: "desc",
@@ -333,16 +344,23 @@ function toIsoDate(date) {
   return `${year}-${month}-${day}`;
 }
 
+function isManualIncome(row) {
+  return Boolean(row?.income_frequency) || String(row?.pay_type || "").startsWith("Manual:");
+}
+
+function payrollAnalysisRows(rows) {
+  return rows.filter(
+    (row) => !isManualIncome(row) || String(row.income_type || "").toLowerCase() === "paystub",
+  );
+}
+
 function buildProjection(rows) {
-  const ordered = [...rows].sort((a, b) => a.pay_date.localeCompare(b.pay_date));
+  const analysisRows = payrollAnalysisRows(rows);
+  const ordered = [...(analysisRows.length ? analysisRows : rows)].sort((a, b) =>
+    a.pay_date.localeCompare(b.pay_date),
+  );
   const recent = ordered.slice(-Math.min(12, ordered.length));
-  const cadenceSamples = ordered
-    .slice(1)
-    .map((row, index) =>
-      Math.round((dateValue(row.pay_date) - dateValue(ordered[index].pay_date)) / 86400000),
-    )
-    .filter((days) => days > 0 && days <= 45);
-  const cadenceDays = Math.round(median(cadenceSamples)) || 14;
+  const cadenceDays = estimateCadenceDays(rows);
   const horizonMonths = Number(el("projectionHorizon")?.value || 6);
   const horizonDays = Math.round(horizonMonths * 30.4375);
   const estimateCount = Math.max(1, Math.round(horizonDays / cadenceDays));
@@ -393,14 +411,23 @@ function buildProjection(rows) {
 }
 
 function estimateCadenceDays(rows) {
-  const ordered = [...rows].sort((a, b) => a.pay_date.localeCompare(b.pay_date));
+  const analysisRows = payrollAnalysisRows(rows);
+  const ordered = [...analysisRows].sort((a, b) => a.pay_date.localeCompare(b.pay_date));
   const samples = ordered
     .slice(1)
     .map((row, index) =>
       Math.round((dateValue(row.pay_date) - dateValue(ordered[index].pay_date)) / 86400000),
     )
     .filter((days) => days > 0 && days <= 45);
-  return Math.round(median(samples)) || 14;
+  if (samples.length) return Math.round(median(samples));
+  const frequency = ordered[0]?.income_frequency;
+  return {
+    weekly: 7,
+    biweekly: 14,
+    semimonthly: 15,
+    monthly: 30,
+    annual: 365,
+  }[frequency] || 14;
 }
 
 function plannerPayload() {
@@ -563,7 +590,19 @@ async function loadPlannerState() {
 
 function resetCalculatorDefaults(rows) {
   if (!rows.length) return;
-  const ordered = [...rows].sort((a, b) => a.pay_date.localeCompare(b.pay_date));
+  const ordered = [...payrollAnalysisRows(rows)].sort((a, b) =>
+    a.pay_date.localeCompare(b.pay_date),
+  );
+  if (!ordered.length) {
+    ["calcRate", "calcHours", "calcOvertime", "calcBonus", "calcTaxRate", "calcDeductionRate"].forEach(
+      (id) => {
+        el(id).value = "0.00";
+      },
+    );
+    state.calculatorDirty = false;
+    renderCalculator();
+    return;
+  }
   const recent = ordered.slice(-Math.min(6, ordered.length));
   const positiveRates = recent.map((row) => row.regular_rate).filter((value) => value > 0);
   const gross = sum(recent, "gross_pay");
@@ -717,18 +756,54 @@ function monthlyPayPeriods(cadenceDays) {
   return Math.max(1, Math.round(30 / cadence));
 }
 
-function expensePlan(expenses, paycheckNet, cadenceDays) {
+function monthlyIncomeFactor(frequency) {
+  return {
+    weekly: 4,
+    biweekly: 2,
+    semimonthly: 2,
+    monthly: 1,
+    annual: 1 / 12,
+    "one-time": 0,
+  }[frequency] ?? 0;
+}
+
+function recurringManualIncome(rows) {
+  const latestBySource = new Map();
+  [...rows]
+    .filter(
+      (row) =>
+        isManualIncome(row) &&
+        String(row.income_type || "").toLowerCase() !== "paystub" &&
+        monthlyIncomeFactor(row.income_frequency) > 0,
+    )
+    .sort((a, b) => String(a.pay_date).localeCompare(String(b.pay_date)))
+    .forEach((row) => {
+      const source = String(row.pay_type || row.payment_type || "Manual income").toLowerCase();
+      latestBySource.set(source, row);
+    });
+  return [...latestBySource.values()].reduce(
+    (total, row) => total + (Number(row.net_pay) || 0) * monthlyIncomeFactor(row.income_frequency),
+    0,
+  );
+}
+
+function expensePlan(expenses, paycheckNet, cadenceDays, additionalMonthlyIncome = 0) {
   const monthlyTotal = expenses.reduce(
     (total, expense) => total + monthlyExpenseAmount(expense),
     0,
   );
   const paychecksPerMonth = monthlyPayPeriods(cadenceDays);
-  const expensePerPaycheck = paychecksPerMonth ? monthlyTotal / paychecksPerMonth : 0;
-  const monthlyIncome = paycheckNet * paychecksPerMonth;
+  const paycheckMonthlyIncome = paycheckNet * paychecksPerMonth;
+  const recurringIncome = Math.max(0, Number(additionalMonthlyIncome) || 0);
+  const monthlyIncome = paycheckMonthlyIncome + recurringIncome;
+  const paycheckFundedExpenses = Math.max(0, monthlyTotal - recurringIncome);
+  const expensePerPaycheck = paychecksPerMonth ? paycheckFundedExpenses / paychecksPerMonth : 0;
 
   return {
     monthlyTotal,
     monthlyIncome,
+    paycheckMonthlyIncome,
+    recurringMonthlyIncome: recurringIncome,
     paychecksPerMonth,
     expensePerPaycheck,
     remaining: paycheckNet - expensePerPaycheck,
@@ -782,11 +857,24 @@ function frequencyLabel(frequency) {
 }
 
 function renderExpenses() {
-  const cadenceDays = estimateCadenceDays(state.allRows);
-  const { monthlyTotal, monthlyIncome, paychecksPerMonth, expensePerPaycheck, remaining, incomeRatio } =
-    expensePlan(state.expenses, state.calculatorNet, cadenceDays);
+  const payrollRows = payrollAnalysisRows(state.allRows);
+  const cadenceDays = payrollRows.length ? estimateCadenceDays(payrollRows) : 0;
+  const additionalMonthlyIncome = recurringManualIncome(state.allRows);
+  const {
+    monthlyTotal,
+    monthlyIncome,
+    paycheckMonthlyIncome,
+    recurringMonthlyIncome,
+    paychecksPerMonth,
+    expensePerPaycheck,
+    remaining,
+    incomeRatio,
+  } = expensePlan(state.expenses, state.calculatorNet, cadenceDays, additionalMonthlyIncome);
 
   el("expenseMonthlyIncome").textContent = currency.format(monthlyIncome);
+  el("expenseIncomeBreakdown").textContent = recurringMonthlyIncome
+    ? `${currency.format(paycheckMonthlyIncome)} paychecks + ${currency.format(recurringMonthlyIncome)} recurring additions`
+    : `${currency.format(paycheckMonthlyIncome)} from paychecks`;
   el("expenseMonthlyTotal").textContent = currency.format(monthlyTotal);
   el("expensePerPaycheck").textContent = currency.format(expensePerPaycheck);
   el("expensePerPaycheckLabel").textContent = paychecksPerMonth
@@ -833,8 +921,9 @@ function renderExpenses() {
 }
 
 function nextProjectedPayDate(rows, today = new Date()) {
-  if (!rows.length) return null;
-  const ordered = [...rows].sort((a, b) => a.pay_date.localeCompare(b.pay_date));
+  const payrollRows = payrollAnalysisRows(rows);
+  if (!payrollRows.length) return null;
+  const ordered = [...payrollRows].sort((a, b) => a.pay_date.localeCompare(b.pay_date));
   const cadenceDays = estimateCadenceDays(ordered);
   const currentDate = new Date(today);
   currentDate.setHours(0, 0, 0, 0);
@@ -851,7 +940,7 @@ function projectedPayDates(rows, targetDate, today = new Date()) {
   if (Number.isNaN(target.valueOf()) || target < currentDate) return [];
   const nextDate = nextProjectedPayDate(rows, currentDate);
   if (!nextDate) return [];
-  const cadenceDays = estimateCadenceDays(rows);
+  const cadenceDays = estimateCadenceDays(payrollAnalysisRows(rows));
   const dates = [];
   while (nextDate <= target) {
     dates.push(toIsoDate(nextDate));
@@ -1386,6 +1475,7 @@ function renderHealth(rows) {
       row.period_end,
       Number(row.gross_pay).toFixed(2),
       Number(row.net_pay).toFixed(2),
+      isManualIncome(row) ? row.pay_type : "",
     ].join("|");
     if (signatures.has(signature)) duplicateCount += 1;
     signatures.add(signature);
@@ -1393,12 +1483,13 @@ function renderHealth(rows) {
   const complete = rows.filter(
     (row) =>
       row.pay_date &&
-      row.period_begin &&
-      row.period_end &&
+      (isManualIncome(row) || (row.period_begin && row.period_end)) &&
       Number.isFinite(row.gross_pay) &&
       Number.isFinite(row.net_pay),
   ).length;
-  const ordered = [...rows].sort((a, b) => a.pay_date.localeCompare(b.pay_date));
+  const ordered = [...payrollAnalysisRows(rows)].sort((a, b) =>
+    a.pay_date.localeCompare(b.pay_date),
+  );
   const cadenceDays = estimateCadenceDays(rows);
   const cadenceGaps = ordered.slice(1).filter((row, index) => {
     const gap = Math.round(
@@ -1930,7 +2021,11 @@ function renderTable(rows) {
       (row) => `
         <tr>
           <td data-label="Pay date">${escapeHtml(formatDate(row.pay_date))}</td>
-          <td data-label="Pay period">${escapeHtml(formatDate(row.period_begin, true))} – ${escapeHtml(formatDate(row.period_end, true))}</td>
+          <td data-label="Pay period">${
+            row.period_begin && row.period_end
+              ? `${escapeHtml(formatDate(row.period_begin, true))} – ${escapeHtml(formatDate(row.period_end, true))}`
+              : "Not applicable"
+          }</td>
           <td data-label="Pay type"><span class="pay-type">${escapeHtml(row.payment_type || row.pay_type || "Payroll")}</span></td>
           <td class="number" data-label="Hours">${number.format(row.hours_units)}</td>
           <td class="number" data-label="OT hours">${number.format(Number(row.overtime_hours) || 0)}</td>
@@ -2135,6 +2230,95 @@ function closeIngestModal() {
   el("ingestModal").hidden = true;
   document.body.classList.remove("modal-open");
   el("ingestButton").focus();
+}
+
+function syncManualIncomeType() {
+  const defaults = MANUAL_INCOME_DEFAULTS[el("manualIncomeType").value];
+  const sourceInput = el("manualIncomeSource");
+  if (!sourceInput.value.trim() || sourceInput.value === state.manualSourceDefault) {
+    sourceInput.value = defaults.source;
+  }
+  state.manualSourceDefault = defaults.source;
+  el("manualIncomeFrequency").value = defaults.frequency;
+}
+
+function resetManualIncomeForm() {
+  el("manualIncomeForm").reset();
+  state.manualSourceDefault = "Paystub";
+  el("manualIncomeSource").value = state.manualSourceDefault;
+  el("manualPayDate").value = toIsoDate(new Date());
+  el("manualTaxes").value = "0";
+  el("manualDeductions").value = "0";
+  el("manualEntryResult").hidden = true;
+}
+
+function openManualEntryModal() {
+  if (!el("manualPayDate").value) el("manualPayDate").value = toIsoDate(new Date());
+  el("manualEntryModal").hidden = false;
+  document.body.classList.add("modal-open");
+  window.setTimeout(() => el("manualIncomeType").focus(), 0);
+}
+
+function closeManualEntryModal() {
+  el("manualEntryModal").hidden = true;
+  document.body.classList.remove("modal-open");
+  el("manualEntryButton").focus();
+}
+
+function renderManualEntryError(message) {
+  const result = el("manualEntryResult");
+  result.innerHTML = `<h3>Could not save this income</h3><p>${escapeHtml(message)}</p>`;
+  result.hidden = false;
+}
+
+async function submitManualIncome(event) {
+  event.preventDefault();
+  const button = el("saveManualIncome");
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = "Saving…";
+  el("manualEntryResult").hidden = true;
+
+  const payload = {
+    income_type: el("manualIncomeType").value,
+    source: el("manualIncomeSource").value.trim(),
+    income_frequency: el("manualIncomeFrequency").value,
+    payment_method: el("manualPaymentMethod").value,
+    pay_date: el("manualPayDate").value,
+    net_pay: el("manualNet").value,
+    gross_pay: el("manualGross").value,
+    total_taxes: el("manualTaxes").value,
+    total_deductions: el("manualDeductions").value,
+    period_begin: el("manualPeriodBegin").value,
+    period_end: el("manualPeriodEnd").value,
+    regular_rate: el("manualRate").value,
+    regular_hours: el("manualRegularHours").value,
+    overtime_hours: el("manualOvertimeHours").value,
+  };
+
+  try {
+    const response = await fetch("/api/paystubs/manual", {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.message || "The manual income could not be saved.");
+    if (!result.added) {
+      renderManualEntryError("This deposit already exists in your pay history.");
+      showToast("Duplicate deposit skipped; the database was not changed.");
+      return;
+    }
+    await loadPaystubsFromServer();
+    resetManualIncomeForm();
+    closeManualEntryModal();
+    showToast("Income saved to your account.");
+  } catch (error) {
+    renderManualEntryError(error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = originalLabel;
+  }
 }
 
 function renderIngestError(message) {
@@ -2604,6 +2788,11 @@ function bindEvents() {
   el("usersTableBody").addEventListener("change", handleUsersTableChange);
   el("usersTableBody").addEventListener("click", handleUsersTableClick);
   el("exportButton").addEventListener("click", exportFilteredRows);
+  el("manualEntryButton").addEventListener("click", openManualEntryModal);
+  el("closeManualEntry").addEventListener("click", closeManualEntryModal);
+  document.querySelector("[data-close-manual]").addEventListener("click", closeManualEntryModal);
+  el("manualIncomeType").addEventListener("change", syncManualIncomeType);
+  el("manualIncomeForm").addEventListener("submit", submitManualIncome);
   el("ingestButton").addEventListener("click", openIngestModal);
   el("closeIngest").addEventListener("click", closeIngestModal);
   document.querySelector("[data-close-ingest]").addEventListener("click", closeIngestModal);
@@ -2630,6 +2819,7 @@ function bindEvents() {
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !el("ingestModal").hidden) closeIngestModal();
+    if (event.key === "Escape" && !el("manualEntryModal").hidden) closeManualEntryModal();
   });
   el("pageSize").addEventListener("change", (event) => {
     state.pageSize = Number(event.target.value);
@@ -2685,6 +2875,7 @@ if (typeof module !== "undefined" && module.exports) {
     expenseFrequencyForCadence,
     expenseAmountFromMonthly,
     moveExpenseByOffset,
+    monthlyIncomeFactor,
     monthlyPayPeriods,
     monthlyExpenseAmount,
     normalizeExpenseAmount,
@@ -2692,6 +2883,7 @@ if (typeof module !== "undefined" && module.exports) {
     parseCSV,
     projectedPayDates,
     projectedPayDatesForMonth,
+    recurringManualIncome,
     reorderExpenses,
     totalGoalContribution,
   };

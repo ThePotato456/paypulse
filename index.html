@@ -86,6 +86,12 @@
             Private browser analysis
           </span>
           <span id="accountChip" class="account-chip"><strong id="accountUsername">—</strong><small id="accountRole">member</small></span>
+          <button id="manualEntryButton" class="button button-secondary" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            Add income
+          </button>
           <button id="ingestButton" class="button button-primary" type="button">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 14v5h14v-5" />
@@ -589,7 +595,11 @@
               <section class="expense-summary-group" aria-labelledby="monthlyBudgetHeading">
                 <h4 id="monthlyBudgetHeading">Monthly budget</h4>
                 <div class="expense-summary-metrics">
-                  <div><span>Estimated take-home</span><strong id="expenseMonthlyIncome">—</strong></div>
+                  <div class="expense-income-total">
+                    <span>Total monthly income</span>
+                    <strong id="expenseMonthlyIncome">—</strong>
+                    <small id="expenseIncomeBreakdown">Paychecks only</small>
+                  </div>
                   <div><span>Recurring expenses</span><strong id="expenseMonthlyTotal">—</strong></div>
                   <div><span>Income committed</span><strong id="expenseRatio">—</strong></div>
                 </div>
@@ -875,9 +885,122 @@
       </section>
     </div>
 
+    <div id="manualEntryModal" class="modal" hidden>
+      <button class="modal-backdrop" type="button" data-close-manual aria-label="Close manual income dialog"></button>
+      <form
+        id="manualIncomeForm"
+        class="modal-card manual-entry-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="manualEntryTitle"
+        aria-describedby="manualEntryDescription"
+      >
+        <div class="modal-header">
+          <div>
+            <p class="panel-kicker">MANUAL INCOME</p>
+            <h2 id="manualEntryTitle">Add a stub or deposit</h2>
+            <p id="manualEntryDescription">
+              Record payroll, VA benefits, Social Security, pensions, or another deposit directly in your account.
+            </p>
+          </div>
+          <button id="closeManualEntry" class="modal-close" type="button" aria-label="Close dialog">×</button>
+        </div>
+
+        <div class="manual-entry-form">
+          <div class="field">
+            <label for="manualIncomeType">Income type</label>
+            <select id="manualIncomeType" required>
+              <option value="paystub">Paystub</option>
+              <option value="va-benefits">VA benefits</option>
+              <option value="social-security">Social Security</option>
+              <option value="pension">Pension</option>
+              <option value="other">Other income</option>
+            </select>
+          </div>
+          <div class="field manual-field-wide">
+            <label for="manualIncomeSource">Income source / description</label>
+            <input id="manualIncomeSource" type="text" maxlength="80" value="Paystub" required />
+          </div>
+          <div class="field">
+            <label for="manualIncomeFrequency">Frequency</label>
+            <select id="manualIncomeFrequency">
+              <option value="one-time" selected>One time</option>
+              <option value="weekly">Weekly</option>
+              <option value="biweekly">Every 2 weeks</option>
+              <option value="semimonthly">Twice monthly</option>
+              <option value="monthly">Monthly</option>
+              <option value="annual">Annual</option>
+            </select>
+          </div>
+          <p class="manual-entry-note">
+            Recurring benefits and other-income deposits are added to the expense calculator as calendar-month income. Paystubs establish paycheck income; one-time deposits stay in history without inflating the monthly budget.
+          </p>
+
+          <div class="field">
+            <label for="manualPayDate">Deposit date</label>
+            <input id="manualPayDate" type="date" required />
+          </div>
+          <div class="field">
+            <label for="manualPaymentMethod">Payment method</label>
+            <select id="manualPaymentMethod">
+              <option value="direct-deposit" selected>Direct deposit</option>
+              <option value="check">Check</option>
+              <option value="cash">Cash</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="manualNet">Deposit amount</label>
+            <div class="input-prefix"><span>$</span><input id="manualNet" type="number" min="0.01" step="0.01" inputmode="decimal" required /></div>
+          </div>
+          <div class="field">
+            <label for="manualGross">Gross amount</label>
+            <div class="input-prefix"><span>$</span><input id="manualGross" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="Auto" /></div>
+          </div>
+          <div class="field">
+            <label for="manualTaxes">Taxes withheld</label>
+            <div class="input-prefix"><span>$</span><input id="manualTaxes" type="number" min="0" step="0.01" inputmode="decimal" value="0" /></div>
+          </div>
+          <div class="field">
+            <label for="manualDeductions">Other deductions</label>
+            <div class="input-prefix"><span>$</span><input id="manualDeductions" type="number" min="0" step="0.01" inputmode="decimal" value="0" /></div>
+          </div>
+
+          <div class="manual-entry-divider"><span>Optional paystub details</span></div>
+          <div class="field">
+            <label for="manualPeriodBegin">Period start</label>
+            <input id="manualPeriodBegin" type="date" />
+          </div>
+          <div class="field">
+            <label for="manualPeriodEnd">Period end</label>
+            <input id="manualPeriodEnd" type="date" />
+          </div>
+          <div class="field">
+            <label for="manualRate">Hourly rate</label>
+            <div class="input-prefix"><span>$</span><input id="manualRate" type="number" min="0" step="0.01" inputmode="decimal" /></div>
+          </div>
+          <div class="field">
+            <label for="manualRegularHours">Regular hours</label>
+            <input id="manualRegularHours" type="number" min="0" step="0.01" inputmode="decimal" />
+          </div>
+          <div class="field">
+            <label for="manualOvertimeHours">Overtime hours</label>
+            <input id="manualOvertimeHours" type="number" min="0" step="0.01" inputmode="decimal" />
+          </div>
+
+          <div id="manualEntryResult" class="ingest-result is-error manual-entry-result" role="alert" hidden></div>
+        </div>
+
+        <div class="modal-actions">
+          <p>Gross defaults to the deposit plus taxes and deductions when left blank.</p>
+          <button id="saveManualIncome" class="button button-primary" type="submit">Save income</button>
+        </div>
+      </form>
+    </div>
+
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
     <script src="vendor/chart.umd.min.js"></script>
-    <script src="app.js?v=6cb64e5"></script>
+    <script src="app.js?v=20260808-manual-income"></script>
   </body>
 </html>

@@ -93,19 +93,26 @@ def normalize_paystub_record(record: dict[str, object]) -> dict[str, object]:
             normalized[field] = float(value or 0)
     if not normalized["pay_date"]:
         raise ValueError("Every pay statement needs a pay date.")
+    income_frequency = str(record.get("income_frequency") or "").strip()
+    if income_frequency in {"one-time", "weekly", "biweekly", "semimonthly", "monthly", "annual"}:
+        normalized["income_frequency"] = income_frequency
+    income_type = str(record.get("income_type") or "").strip()
+    if income_type:
+        normalized["income_type"] = income_type[:32]
     return normalized
 
 
 def paystub_signature(record: dict[str, object]) -> str:
-    material = "|".join(
-        [
-            str(record.get("pay_date", "")),
-            str(record.get("period_begin", "")),
-            str(record.get("period_end", "")),
-            f"{float(record.get('gross_pay', 0) or 0):.2f}",
-            f"{float(record.get('net_pay', 0) or 0):.2f}",
-        ]
-    )
+    parts = [
+        str(record.get("pay_date", "")),
+        str(record.get("period_begin", "")),
+        str(record.get("period_end", "")),
+        f"{float(record.get('gross_pay', 0) or 0):.2f}",
+        f"{float(record.get('net_pay', 0) or 0):.2f}",
+    ]
+    if str(record.get("pay_type", "")).startswith("Manual:"):
+        parts.append(str(record.get("pay_type", "")))
+    material = "|".join(parts)
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 

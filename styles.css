@@ -2689,6 +2689,67 @@ footer {
   text-align: right;
 }
 
+.manual-entry-card {
+  width: min(780px, 100%);
+}
+
+.manual-entry-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  padding: 22px 24px;
+}
+
+.manual-field-wide {
+  grid-column: span 2;
+}
+
+.manual-entry-note,
+.manual-entry-divider,
+.manual-entry-result {
+  grid-column: 1 / -1;
+}
+
+.manual-entry-note {
+  margin: -4px 0 2px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: #f1faf8;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.manual-entry-divider {
+  position: relative;
+  margin-top: 2px;
+  border-top: 1px solid var(--line);
+}
+
+.manual-entry-divider span {
+  position: relative;
+  top: -7px;
+  padding-right: 9px;
+  background: #fff;
+  color: #65778a;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.manual-entry-result {
+  margin: 0;
+}
+
+.expense-income-total small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
 .modal-actions {
   display: flex;
   align-items: center;
@@ -3541,6 +3602,22 @@ body.modal-open {
   .selected-file,
   .ingest-result {
     margin-inline: 18px;
+  }
+
+  .manual-entry-form {
+    grid-template-columns: 1fr;
+    padding-inline: 18px;
+  }
+
+  .manual-field-wide,
+  .manual-entry-note,
+  .manual-entry-divider,
+  .manual-entry-result {
+    grid-column: auto;
+  }
+
+  .manual-entry-result {
+    margin: 0;
   }
 
   .modal-actions {

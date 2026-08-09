@@ -8,7 +8,7 @@ Turn sanitized pay history into clear trends, forecasts, expense plans, and savi
 
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Chart.js 4.5.1](https://img.shields.io/badge/Chart.js-4.5.1-FF6384?style=flat-square&logo=chartdotjs&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-20%20passing-10A58F?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-28%20passing-10A58F?style=flat-square)
 ![Deployment](https://img.shields.io/badge/deployment-self--hosted-183A5A?style=flat-square)
 ![Privacy](https://img.shields.io/badge/privacy-local--first-087C6D?style=flat-square)
 
@@ -63,6 +63,14 @@ Maintain multiple savings goals with target dates, saved balances, progress indi
 Upload a supported PDF statement to extract and append sanitized payroll fields. Temporary source files are deleted immediately after processing.
 
 ![Paystub ingestion dialog](docs/images/paystub-ingestion.png)
+
+### Manual income and deposits
+
+Use **Add income** to record a paystub or a deposit such as VA benefits, Social Security,
+a pension, or another income source. Manual records are validated and saved to the signed-in
+user's SQLite pay history. Recurring benefit and other-income deposits are converted using
+calendar-month increments and added to the income shown in the expense calculator; one-time
+deposits remain in pay history without inflating the recurring monthly budget.
 
 ## Architecture
 
@@ -178,6 +186,7 @@ python server.py [--host HOST] [--port PORT] [--database PATH] [--csv PATH] [--p
 | `POST` | `/api/auth/login`, `/api/auth/logout` | Starts or ends a session |
 | `GET` | `/api/paystubs` | Loads the signed-in user’s pay statements |
 | `POST` | `/api/paystubs/import` | Saves CSV payroll rows to the signed-in user's records |
+| `POST` | `/api/paystubs/manual` | Saves a validated manual paystub or income deposit |
 | `GET`, `PUT` | `/api/planner` | Loads or saves the signed-in user’s planner |
 | `POST` | `/api/ingest` | Processes a PDF into the signed-in user’s records |
 | `GET`, `POST` | `/api/users` | Lists or creates users as an administrator |

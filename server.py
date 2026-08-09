@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import math
 import os
 import re
 import tempfile
 import uuid
+from datetime import date
 from http.cookies import SimpleCookie
 from email.parser import BytesParser
 from email.policy import default
@@ -40,6 +42,27 @@ DEFAULT_PLANNER = {
 EXPENSE_FREQUENCIES = {"weekly", "biweekly", "monthly", "annual", "one-time"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+MANUAL_INCOME_TYPES = {
+    "paystub": "Paystub",
+    "va-benefits": "VA Benefits",
+    "social-security": "Social Security",
+    "pension": "Pension",
+    "other": "Other income",
+}
+MANUAL_PAYMENT_METHODS = {
+    "direct-deposit": "Direct deposit",
+    "check": "Check",
+    "cash": "Cash",
+    "other": "Other",
+}
+MANUAL_INCOME_FREQUENCIES = {
+    "one-time",
+    "weekly",
+    "biweekly",
+    "semimonthly",
+    "monthly",
+    "annual",
+}
 
 
 def _bounded_number(value: object, maximum: float = 1_000_000_000) -> float:
@@ -55,6 +78,126 @@ def _bounded_number(value: object, maximum: float = 1_000_000_000) -> float:
 def _clean_id(value: object) -> str:
     candidate = str(value or "")
     return candidate if SAFE_ID.fullmatch(candidate) else uuid.uuid4().hex
+
+
+def _manual_number(
+    value: object, label: str, *, required: bool = False, maximum: float = 1_000_000_000
+) -> float:
+    if value in (None, ""):
+        if required:
+            raise ValueError(f"{label} is required.")
+        return 0.0
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a valid number.") from exc
+    if not math.isfinite(number) or not 0 <= number <= maximum:
+        raise ValueError(f"{label} must be between 0 and {maximum:,.0f}.")
+    return round(number, 2)
+
+
+def _manual_date(value: object, label: str, *, required: bool = False) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        if required:
+            raise ValueError(f"{label} is required.")
+        return ""
+    if not ISO_DATE.fullmatch(candidate):
+        raise ValueError(f"{label} must use YYYY-MM-DD format.")
+    try:
+        date.fromisoformat(candidate)
+    except ValueError as exc:
+        raise ValueError(f"{label} must be a valid calendar date.") from exc
+    return candidate
+
+
+def normalize_manual_income(payload: object) -> dict[str, object]:
+    """Validate a manual paystub or benefit deposit and map it to payroll storage."""
+    if not isinstance(payload, dict):
+        raise ValueError("Manual income data must be a JSON object.")
+
+    income_type = str(payload.get("income_type") or "").strip()
+    if income_type not in MANUAL_INCOME_TYPES:
+        raise ValueError("Choose a supported income type.")
+    source = str(payload.get("source") or MANUAL_INCOME_TYPES[income_type]).strip()
+    if not 1 <= len(source) <= 80:
+        raise ValueError("Income source must contain 1 to 80 characters.")
+
+    payment_method = str(payload.get("payment_method") or "direct-deposit").strip()
+    if payment_method not in MANUAL_PAYMENT_METHODS:
+        raise ValueError("Choose a supported payment method.")
+    income_frequency = str(payload.get("income_frequency") or "one-time").strip()
+    if income_frequency not in MANUAL_INCOME_FREQUENCIES:
+        raise ValueError("Choose a supported income frequency.")
+
+    pay_date = _manual_date(payload.get("pay_date"), "Deposit date", required=True)
+    period_begin = _manual_date(payload.get("period_begin"), "Period start")
+    period_end = _manual_date(payload.get("period_end"), "Period end")
+    if bool(period_begin) != bool(period_end):
+        raise ValueError("Enter both pay-period dates or leave both blank.")
+    if period_begin and period_begin > period_end:
+        raise ValueError("Pay-period start cannot be after its end.")
+
+    net_pay = _manual_number(payload.get("net_pay"), "Deposit amount", required=True)
+    total_taxes = _manual_number(payload.get("total_taxes"), "Taxes withheld")
+    total_deductions = _manual_number(payload.get("total_deductions"), "Other deductions")
+    gross_value = payload.get("gross_pay")
+    gross_pay = (
+        round(net_pay + total_taxes + total_deductions, 2)
+        if gross_value in (None, "")
+        else _manual_number(gross_value, "Gross amount", required=True)
+    )
+    if gross_pay <= 0:
+        raise ValueError("Gross amount must be greater than zero.")
+    calculated_net = round(gross_pay - total_taxes - total_deductions, 2)
+    if abs(calculated_net - net_pay) > 0.02:
+        raise ValueError(
+            "Gross amount minus taxes and deductions must equal the deposit amount."
+        )
+
+    regular_rate = _manual_number(payload.get("regular_rate"), "Hourly rate")
+    regular_hours = _manual_number(
+        payload.get("regular_hours"), "Regular hours", maximum=100_000
+    )
+    overtime_hours = _manual_number(
+        payload.get("overtime_hours"), "Overtime hours", maximum=100_000
+    )
+    overtime_rate = round(regular_rate * 1.5, 4) if regular_rate else 0.0
+    regular_pay = round(regular_rate * regular_hours, 2) if regular_rate else 0.0
+    overtime_pay = round(overtime_rate * overtime_hours, 2) if overtime_rate else 0.0
+    bonus_pay = round(max(0.0, gross_pay - regular_pay - overtime_pay), 2)
+
+    return {
+        "pay_date": pay_date,
+        "period_begin": period_begin,
+        "period_end": period_end,
+        "year": int(pay_date[:4]),
+        "pay_type": f"Manual: {source}",
+        "payment_type": f"{source} · {MANUAL_PAYMENT_METHODS[payment_method]}",
+        "gross_pay": gross_pay,
+        "total_taxes": total_taxes,
+        "total_deductions": total_deductions,
+        "calculated_net": calculated_net,
+        "net_pay": net_pay,
+        "hours_units": round(regular_hours + overtime_hours, 2),
+        "regular_rate": regular_rate,
+        "regular_hours": regular_hours,
+        "regular_pay": regular_pay,
+        "overtime_rate": overtime_rate,
+        "overtime_hours": overtime_hours,
+        "overtime_pay": overtime_pay,
+        "bonus_pay": bonus_pay,
+        "reported_tips": 0.0,
+        "social_security_tax": 0.0,
+        "medicare_tax": 0.0,
+        "federal_withholding": total_taxes,
+        "mississippi_withholding": 0.0,
+        "roth_401k": 0.0,
+        "dental_insurance": 0.0,
+        "health_insurance": total_deductions,
+        "income_type": income_type,
+        "income_frequency": income_frequency,
+    }
 
 
 def normalize_planner(payload: object) -> dict[str, object]:
@@ -196,6 +339,7 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
                     "authentication": True,
                     "database": True,
                     "payroll_import": True,
+                    "manual_income": True,
                 },
             )
             return
@@ -308,6 +452,20 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
                 result = DATABASE.add_paystub_records(
                     int(session[0]["id"]), payload["records"]
                 )
+                self._send_json(HTTPStatus.OK, result)
+            except ValueError as exc:
+                self._send_json(
+                    HTTPStatus.BAD_REQUEST, {"status": "error", "message": str(exc)}
+                )
+            return
+        if request_path == "/api/paystubs/manual":
+            session = self._require_user(csrf=True)
+            if not session:
+                return
+            try:
+                record = normalize_manual_income(self._read_json_body())
+                result = DATABASE.add_paystub_records(int(session[0]["id"]), [record])
+                result["record"] = record
                 self._send_json(HTTPStatus.OK, result)
             except ValueError as exc:
                 self._send_json(
