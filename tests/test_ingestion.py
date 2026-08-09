@@ -34,6 +34,34 @@ Tips 29.32 00 Instore
 Employer Contributions and Other Memo Calculations
 """
 
+TIPPED_SUMMARY_TEXT = """
+Statement of Earnings For: Example Employee
+Period Begin: 7/20/2026 Period End: 8/2/2026 Check Date: 8/7/2026 Pay Type: Hourly
+Voucher Id Check Amount Gross Pay Net Pay Check Message
+V0000001 $0.00 $228.41 $200.55
+EARNINGS TAXES DEDUCTIONS
+Regular-DV 9.0000 15.14 136.26 126.26 1,136.34 SOC SEC EE 22.58 210.41
+Tips 135.76 0.00 1,332.21 MED EE 5.28 49.21
+Tip Reg-DR 5.0000 18.43 92.15 173.60 868.00
+Regular 0.00 6.35 57.15
+Total: 33.57 364.17 306.21 3,393.70 Total: 27.86 259.62 Total: 0.00 0.00
+"""
+
+TIPPED_DETAIL_TEXT = """
+Employee Pay Details
+For Pay Period: 7/20/2026 - 8/2/2026
+Pay Date: 8/7/2026
+Regular-DV 9.0000 7.85 70.65 2 00 Instore
+Regular-DV 9.0000 7.29 65.61 1 00 Instore
+Tip Reg-DR 5.0000 9.30 46.50 1 05 Driver
+Tip Reg-DR 5.0000 9.13 45.65 2 05 Driver
+33.57 228.41
+Non-Paid Earnings
+Tips 59.25 05 Driver
+Tips 76.51 05 Driver
+135.76
+"""
+
 
 class IngestionTests(unittest.TestCase):
     def test_statement_extracts_and_reconciles(self):
@@ -47,6 +75,17 @@ class IngestionTests(unittest.TestCase):
         self.assertEqual(float(record["overtime_hours"]), 0.80)
         self.assertEqual(float(record["reported_tips"]), 85.82)
         self.assertEqual(statement.checks["status"], "OK")
+
+    def test_tipped_role_codes_reconcile_paid_and_nonpaid_earnings(self):
+        statement = parse_statement_text(TIPPED_SUMMARY_TEXT, TIPPED_DETAIL_TEXT)
+        record = statement.record
+
+        self.assertEqual(float(record["gross_pay"]), 228.41)
+        self.assertEqual(float(record["regular_hours"]), 33.57)
+        self.assertEqual(float(record["regular_pay"]), 228.41)
+        self.assertEqual(float(record["reported_tips"]), 135.76)
+        self.assertEqual(statement.checks["gross_difference"], 0.0)
+        self.assertEqual(statement.checks["hours_difference"], 0.0)
 
     def test_append_is_atomic_and_duplicate_safe(self):
         statement = parse_statement_text(SUMMARY_TEXT, DETAIL_TEXT)

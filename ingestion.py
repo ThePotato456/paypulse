@@ -180,7 +180,7 @@ def _reported_totals(text: str) -> tuple[Decimal, Decimal, Decimal]:
 
 def _earning_lines(text: str, label: str) -> list[tuple[Decimal, Decimal, Decimal]]:
     matches = re.findall(
-        rf"^{re.escape(label)}\s+({NUMBER_PATTERN})\s+({NUMBER_PATTERN})\s+({NUMBER_PATTERN})",
+        rf"^{re.escape(label)}(?:-[A-Za-z0-9]+)?\s+({NUMBER_PATTERN})\s+({NUMBER_PATTERN})\s+({NUMBER_PATTERN})",
         text,
         flags=re.IGNORECASE | re.MULTILINE,
     )
@@ -255,7 +255,10 @@ def parse_statement_text(
     has_detail = "Employee Pay Details" in detail_text
     detail_source = detail_text if has_detail else summary_text
     regular_rate, regular_hours, regular_pay = _sum_earning_lines(
-        _earning_lines(detail_source, "Regular")
+        [
+            *_earning_lines(detail_source, "Regular"),
+            *_earning_lines(detail_source, "Tip Reg"),
+        ]
     )
     overtime_rate, overtime_hours, overtime_pay = _sum_earning_lines(
         _earning_lines(detail_source, "Overtime")
