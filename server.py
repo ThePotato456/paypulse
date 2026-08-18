@@ -17,7 +17,7 @@ from email.policy import default
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from database import PayPulseDatabase, SESSION_SECONDS, VaultError, load_legacy_paystubs
 from ingestion import IngestionError, parse_pdf
@@ -31,6 +31,13 @@ DATABASE = PayPulseDatabase(DATABASE_PATH)
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 MAX_PLANNER_BYTES = 128 * 1024
 MAX_PAYSTUB_IMPORT_BYTES = 4 * 1024 * 1024
+PUBLIC_ASSETS = {
+    "/": "index.html",
+    "/index.html": "index.html",
+    "/app.js": "app.js",
+    "/styles.css": "styles.css",
+    "/vendor/chart.umd.min.js": "vendor/chart.umd.min.js",
+}
 DEFAULT_PLANNER = {
     "allocations": {
         "mode": "percent",
@@ -327,6 +334,36 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
             self.send_header("Cloudflare-CDN-Cache-Control", "no-store")
         super().end_headers()
 
+    def send_head(self):
+        """Serve only explicitly public dashboard assets for GET and HEAD requests."""
+        try:
+            request_path = unquote(urlparse(self.path).path, errors="strict")
+        except UnicodeDecodeError:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return None
+        relative_path = PUBLIC_ASSETS.get(request_path)
+        if relative_path is None:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return None
+
+        asset_path = PROJECT_DIR / relative_path
+        try:
+            asset = asset_path.open("rb")
+        except OSError:
+            self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+            return None
+        try:
+            details = os.fstat(asset.fileno())
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", self.guess_type(str(asset_path)))
+            self.send_header("Content-Length", str(details.st_size))
+            self.send_header("Last-Modified", self.date_time_string(details.st_mtime))
+            self.end_headers()
+            return asset
+        except Exception:
+            asset.close()
+            raise
+
     def do_GET(self) -> None:
         request_path = urlparse(self.path).path
         if request_path == "/api/health":
@@ -393,9 +430,6 @@ class PayPulseHandler(SimpleHTTPRequestHandler):
             if not session:
                 return
             self._send_json(HTTPStatus.OK, {"status": "ok", "users": DATABASE.list_users()})
-            return
-        if request_path.startswith("/data/"):
-            self._send_json(HTTPStatus.NOT_FOUND, {"status": "error", "message": "Not found."})
             return
         super().do_GET()
 

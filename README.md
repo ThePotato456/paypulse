@@ -8,7 +8,7 @@ Turn sanitized pay history into clear trends, forecasts, expense plans, and savi
 
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Chart.js 4.5.1](https://img.shields.io/badge/Chart.js-4.5.1-FF6384?style=flat-square&logo=chartdotjs&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-37%20passing-10A58F?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-43%20passing-10A58F?style=flat-square)
 ![Deployment](https://img.shields.io/badge/deployment-self--hosted-183A5A?style=flat-square)
 ![Privacy](https://img.shields.io/badge/privacy-local--first-087C6D?style=flat-square)
 
@@ -222,7 +222,8 @@ Projections are planning estimates—not guaranteed income. Future schedules, ra
 - Session identifiers are hashed in SQLite and sent in `HttpOnly`, `SameSite=Lax` cookies.
 - Authenticated writes require a per-session CSRF token.
 - The final active administrator cannot be deactivated, demoted, or deleted.
-- The server blocks direct HTTP access to the `data` directory and adds `X-Content-Type-Options: nosn` plus a no-referrer policy.
+- Static responses use an explicit asset allowlist for both `GET` and `HEAD`; repository metadata, source files, data, tests, and directory listings return `404`.
+- Responses include `X-Content-Type-Options: nosniff` and a no-referrer policy.
 
 This is encrypted-at-rest protection, not zero-knowledge encryption: the trusted running server decrypts data while servicing an unlocked session, and the recovery owner can reset another user’s password. Theft of SQLite or its backups does not reveal financial values without cracking a user or owner password. A compromised running server can read unlocked data.
 
@@ -236,7 +237,7 @@ Run the complete test suite:
 python -m unittest discover -s tests -v
 ```
 
-The tests cover statement extraction and reconciliation, duplicate-safe imports, planner validation, password hashing, sessions, per-user planner/paystub isolation, and administrator safeguards.
+The tests cover statement extraction and reconciliation, duplicate-safe imports, planner validation, password hashing, sessions, per-user planner/paystub isolation, administrator safeguards, and static-file exposure bypasses.
 
 ## Project structure
 
@@ -255,7 +256,8 @@ paypulse/
 │   └── images/
 ├── tests/
 │   ├── test_ingestion.py
-│   └── test_planner.py
+│   ├── test_planner.py
+│   └── test_static_serving.py
 └── vendor/
     └── chart.umd.min.js
 ```
