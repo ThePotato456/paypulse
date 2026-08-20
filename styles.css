@@ -3732,6 +3732,12 @@ body.modal-open {
     grid-column: 1 / -1;
   }
 
+  #history td.paycheck-actions {
+    width: 100%;
+    max-width: 100%;
+    padding: 12px;
+  }
+
   #history td:first-child {
     background: #f5fbfa;
     color: var(--navy);
@@ -3774,6 +3780,7 @@ body.modal-open {
     width: 100%;
     min-height: 40px;
     font-size: 10px;
+    white-space: nowrap;
   }
 
   .table-header {
