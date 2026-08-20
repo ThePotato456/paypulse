@@ -62,6 +62,34 @@ Tips 76.51 05 Driver
 135.76
 """
 
+OTHER_EARNING_SUMMARY_TEXT = """
+Statement of Earnings For: Example Employee
+Period Begin: 8/3/2026 Period End: 8/16/2026 Check Date: 8/21/2026 Pay Type: Hourly
+Voucher Id Check Amount Gross Pay Net Pay Check Message
+V0000002 $0.00 $922.15 $779.37
+EARNINGS TAXES DEDUCTIONS
+Regular 11.2500 77.45 871.31 1,345.08 14,832.16 SOC SEC EE 58.21 1,068.17 Roth 401K 20.00 340.00
+Overtime 16.8750 0.05 0.84 53.68 870.67 MED EE 13.61 249.81
+Other 11.2500 50.00 0.00 50.00 FEDERAL WH 31.96 673.63
+Tips 16.71 0.00 1,475.64 MISSISSIPPI WH 19.00 367.00
+Total: 77.50 938.86 1,398.76 17,228.47 Total: 122.78 2,358.61 Total: 20.00 340.00
+"""
+
+OTHER_EARNING_DETAIL_TEXT = """
+Employee Pay Details
+For Pay Period: 8/3/2026 - 8/16/2026
+Pay Date: 8/21/2026
+Regular 11.2500 40.00 450.00 1 00 Instore
+Regular 11.2500 37.45 421.31 2 00 Instore
+Overtime 16.8750 0.05 0.84 1 00 Instore
+Other 11.2500 50.00 00 Instore
+77.50 922.15
+Non-Paid Earnings
+Tips 10.44 00 Instore
+Tips 6.27 00 Instore
+16.71
+"""
+
 
 class IngestionTests(unittest.TestCase):
     def test_statement_extracts_and_reconciles(self):
@@ -84,6 +112,19 @@ class IngestionTests(unittest.TestCase):
         self.assertEqual(float(record["regular_hours"]), 33.57)
         self.assertEqual(float(record["regular_pay"]), 228.41)
         self.assertEqual(float(record["reported_tips"]), 135.76)
+        self.assertEqual(statement.checks["gross_difference"], 0.0)
+        self.assertEqual(statement.checks["hours_difference"], 0.0)
+
+    def test_flat_other_earning_reconciles_without_counting_it_as_hours(self):
+        statement = parse_statement_text(
+            OTHER_EARNING_SUMMARY_TEXT, OTHER_EARNING_DETAIL_TEXT
+        )
+        record = statement.record
+
+        self.assertEqual(float(record["gross_pay"]), 922.15)
+        self.assertEqual(float(record["regular_hours"]), 77.45)
+        self.assertEqual(float(record["overtime_hours"]), 0.05)
+        self.assertEqual(float(record["bonus_pay"]), 50.00)
         self.assertEqual(statement.checks["gross_difference"], 0.0)
         self.assertEqual(statement.checks["hours_difference"], 0.0)
 

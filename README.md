@@ -8,7 +8,7 @@ Turn sanitized pay history into clear trends, forecasts, expense plans, and savi
 
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Chart.js 4.5.1](https://img.shields.io/badge/Chart.js-4.5.1-FF6384?style=flat-square&logo=chartdotjs&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-43%20passing-10A58F?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-44%20passing-10A58F?style=flat-square)
 ![Deployment](https://img.shields.io/badge/deployment-self--hosted-183A5A?style=flat-square)
 ![Privacy](https://img.shields.io/badge/privacy-local--first-087C6D?style=flat-square)
 

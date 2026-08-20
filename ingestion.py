@@ -229,6 +229,30 @@ def _bonus_from_detail(text: str) -> Decimal:
     return _money(sum((_decimal(value) for value in values), Decimal("0")))
 
 
+def _other_pay_from_summary(text: str) -> Decimal:
+    """Extract flat paid earnings whose summary row omits the hours column."""
+    total = Decimal("0.00")
+    right_column = re.compile(
+        r"\s+(?:SOC SEC EE|MED EE|FEDERAL WH|MISSISSIPPI WH|Roth 401K|"
+        r"Dental Ins(?:urance)?|Health Ins(?:urance)?)\b",
+        flags=re.IGNORECASE,
+    )
+    for line in text.splitlines():
+        match = re.match(r"^\s*Other(?:-[A-Za-z0-9]+)?\s+(.+)$", line, flags=re.IGNORECASE)
+        if not match:
+            continue
+        earning_columns = right_column.split(match.group(1), maxsplit=1)[0]
+        values = re.findall(NUMBER_PATTERN, earning_columns)
+        if len(values) >= 5:
+            current_dollars = values[2]
+        elif len(values) >= 4:
+            current_dollars = values[1]
+        else:
+            raise IngestionError("Could not parse the Other earnings amount.")
+        total += _decimal(current_dollars)
+    return _money(total)
+
+
 def _fallback_summary_earning(
     text: str, label: str
 ) -> tuple[Decimal, Decimal, Decimal]:
@@ -268,6 +292,7 @@ def parse_statement_text(
         if has_detail
         else _current_component(summary_text, "Bonus")
     )
+    bonus_pay = _money(bonus_pay + _other_pay_from_summary(summary_text))
 
     if not has_detail and regular_pay == 0 and gross_pay:
         regular_rate, regular_hours, regular_pay = _fallback_summary_earning(
