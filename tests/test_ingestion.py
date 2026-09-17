@@ -3,7 +3,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ingestion import CSV_FIELDS, append_statements, parse_statement_text
+from ingestion import (
+    CSV_FIELDS,
+    IngestionError,
+    _other_pay_from_summary,
+    append_statements,
+    parse_statement_text,
+)
 
 
 SUMMARY_TEXT = """
@@ -90,6 +96,34 @@ Tips 6.27 00 Instore
 16.71
 """
 
+ZERO_OTHER_SUMMARY_TEXT = """
+Statement of Earnings For: Example Employee
+Period Begin: 8/31/2026 Period End: 9/13/2026 Check Date: 9/18/2026 Pay Type: Hourly
+Voucher Id Check Amount Gross Pay Net Pay Check Message
+V0000003 $0.00 $802.58 $663.25
+EARNINGS TAXES DEDUCTIONS
+Regular 11.2500 71.34 802.58 1,493.19 16,498.40 SOC SEC EE 57.35 1,180.90 Roth 401K 20.00 380.00
+Tips 122.36 0.00 1,627.63 MED EE 13.41 276.18
+Overtime 0.00 53.68 870.67 FEDERAL WH 30.57 731.61
+MISSISSIPPI WH 18.00 402.00
+Other 0.00 0.00 50.00
+Total: 71.34 924.94 1,546.87 19,046.70 Total: 119.33 2,590.69 Total: 20.00 380.00
+"""
+
+ZERO_OTHER_DETAIL_TEXT = """
+Employee Pay Details
+For Pay Period: 8/31/2026 - 9/13/2026
+Pay Date: 9/18/2026
+Regular 11.2500 38.38 431.78 00 Instore
+Regular 11.2500 32.96 370.80 00 Instore
+71.34 802.58
+Non-Paid Earnings
+Tips 68.11 00 Instore
+Tips 54.25 00 Instore
+122.36
+Employer Contributions and Other Memo Calculations
+"""
+
 
 class IngestionTests(unittest.TestCase):
     def test_statement_extracts_and_reconciles(self):
@@ -127,6 +161,32 @@ class IngestionTests(unittest.TestCase):
         self.assertEqual(float(record["bonus_pay"]), 50.00)
         self.assertEqual(statement.checks["gross_difference"], 0.0)
         self.assertEqual(statement.checks["hours_difference"], 0.0)
+
+    def test_zero_current_other_does_not_import_year_to_date_pay(self):
+        statement = parse_statement_text(ZERO_OTHER_SUMMARY_TEXT, ZERO_OTHER_DETAIL_TEXT)
+        record = statement.record
+
+        self.assertEqual(float(record["gross_pay"]), 802.58)
+        self.assertEqual(float(record["net_pay"]), 663.25)
+        self.assertEqual(float(record["bonus_pay"]), 0.0)
+        self.assertEqual(float(record["reported_tips"]), 122.36)
+        self.assertEqual(float(record["hours_units"]), 71.34)
+        self.assertEqual(statement.checks["gross_difference"], 0.0)
+        self.assertEqual(statement.checks["hours_difference"], 0.0)
+
+    def test_other_earnings_accept_populated_column_variants(self):
+        cases = (
+            ("Other 12.00 70.00", "12.00"),
+            ("Other 0.00 0.00 50.00", "0.00"),
+            ("Other 11.2500 50.00 0.00 50.00 FEDERAL WH 30.57 731.61", "50.00"),
+            ("Other 11.2500 2.00 22.50 4.00 45.00", "22.50"),
+        )
+        for row, expected in cases:
+            with self.subTest(row=row):
+                self.assertEqual(str(_other_pay_from_summary(row)), expected)
+
+        with self.assertRaisesRegex(IngestionError, "Other earnings amount"):
+            _other_pay_from_summary("Other unavailable")
 
     def test_append_is_atomic_and_duplicate_safe(self):
         statement = parse_statement_text(SUMMARY_TEXT, DETAIL_TEXT)

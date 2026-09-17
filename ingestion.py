@@ -243,10 +243,14 @@ def _other_pay_from_summary(text: str) -> Decimal:
             continue
         earning_columns = right_column.split(match.group(1), maxsplit=1)[0]
         values = re.findall(NUMBER_PATTERN, earning_columns)
-        if len(values) >= 5:
+        # The PDF omits empty Rate and Hrs/Units cells from extracted text.
+        # Read Dollars by the number of populated columns, never from YTD.
+        if len(values) == 5:
             current_dollars = values[2]
-        elif len(values) >= 4:
+        elif len(values) == 4:
             current_dollars = values[1]
+        elif len(values) in (2, 3):
+            current_dollars = values[0]
         else:
             raise IngestionError("Could not parse the Other earnings amount.")
         total += _decimal(current_dollars)
