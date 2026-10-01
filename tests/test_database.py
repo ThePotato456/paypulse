@@ -39,6 +39,7 @@ def sample_record(pay_date="2026-07-24"):
         "roth_401k": 20,
         "dental_insurance": 0,
         "health_insurance": 0,
+        "other_deductions": 0,
     }
 
 

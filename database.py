@@ -910,6 +910,7 @@ def load_legacy_paystubs(path: str | Path) -> list[dict[str, object]]:
         return []
     with csv_path.open("r", encoding="utf-8-sig", newline="") as stream:
         reader = csv.DictReader(stream)
-        if reader.fieldnames != CSV_FIELDS:
+        legacy_fields = [field for field in CSV_FIELDS if field != "other_deductions"]
+        if reader.fieldnames not in (CSV_FIELDS, legacy_fields):
             raise ValueError("The legacy pay-history CSV schema is not supported.")
         return [normalize_paystub_record(row) for row in reader]

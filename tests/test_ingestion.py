@@ -188,6 +188,44 @@ class IngestionTests(unittest.TestCase):
         with self.assertRaisesRegex(IngestionError, "Other earnings amount"):
             _other_pay_from_summary("Other unavailable")
 
+    def test_unknown_deduction_is_preserved_as_other_when_totals_balance(self):
+        summary = (
+            SUMMARY_TEXT
+            .replace("$743.02", "$715.14")
+            .replace("Roth 401K 20.00 300.00", "Roth 401K 20.00 300.00 Vision Plan 27.88 27.88")
+            .replace("Total: 20.00 300.00", "Total: 47.88 327.88")
+        )
+
+        statement = parse_statement_text(summary, DETAIL_TEXT)
+
+        self.assertEqual(float(statement.record["total_deductions"]), 47.88)
+        self.assertEqual(float(statement.record["roth_401k"]), 20.00)
+        self.assertEqual(float(statement.record["other_deductions"]), 27.88)
+        self.assertEqual(statement.checks["net_difference"], 0.0)
+        self.assertEqual(statement.checks["deduction_difference"], 0.0)
+
+    def test_traditional_401k_label_is_categorized_as_retirement(self):
+        summary = (
+            SUMMARY_TEXT
+            .replace("$743.02", "$724.34")
+            .replace("Roth 401K 20.00 300.00", "401K 38.68 675.12")
+            .replace("Total: 20.00 300.00", "Total: 38.68 675.12")
+        )
+
+        statement = parse_statement_text(summary, DETAIL_TEXT)
+
+        self.assertEqual(float(statement.record["roth_401k"]), 38.68)
+        self.assertEqual(float(statement.record["other_deductions"]), 0.0)
+        self.assertEqual(statement.checks["net_difference"], 0.0)
+
+    def test_known_deductions_cannot_exceed_reported_total(self):
+        summary = SUMMARY_TEXT.replace(
+            "Total: 20.00 300.00", "Total: 10.00 300.00"
+        )
+
+        with self.assertRaisesRegex(IngestionError, "deduction_difference=10.00"):
+            parse_statement_text(summary, DETAIL_TEXT)
+
     def test_append_is_atomic_and_duplicate_safe(self):
         statement = parse_statement_text(SUMMARY_TEXT, DETAIL_TEXT)
         with tempfile.TemporaryDirectory() as directory:
@@ -207,6 +245,22 @@ class IngestionTests(unittest.TestCase):
             with csv_path.open("r", encoding="utf-8", newline="") as stream:
                 rows = list(csv.DictReader(stream))
             self.assertEqual(len(rows), 1)
+
+    def test_append_upgrades_legacy_csv_without_other_deductions_column(self):
+        statement = parse_statement_text(SUMMARY_TEXT, DETAIL_TEXT)
+        legacy_fields = [field for field in CSV_FIELDS if field != "other_deductions"]
+        with tempfile.TemporaryDirectory() as directory:
+            csv_path = Path(directory) / "paystubs.csv"
+            with csv_path.open("w", encoding="utf-8", newline="") as stream:
+                csv.DictWriter(stream, fieldnames=legacy_fields).writeheader()
+
+            append_statements(csv_path, [statement], create_backup=False)
+
+            with csv_path.open("r", encoding="utf-8", newline="") as stream:
+                reader = csv.DictReader(stream)
+                rows = list(reader)
+            self.assertEqual(reader.fieldnames, CSV_FIELDS)
+            self.assertEqual(rows[0]["other_deductions"], "0.00")
 
 
 if __name__ == "__main__":

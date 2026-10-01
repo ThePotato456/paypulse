@@ -38,6 +38,7 @@ const NUMERIC_FIELDS = new Set([
   "roth_401k",
   "dental_insurance",
   "health_insurance",
+  "other_deductions",
 ]);
 
 const TABLE_EXPORT_FIELDS = [
@@ -1837,8 +1838,9 @@ function renderCharts(rows) {
     ["State tax", sum(rows, "mississippi_withholding")],
     ["Health insurance", sum(rows, "health_insurance")],
     ["Medicare", sum(rows, "medicare_tax")],
-    ["Roth 401K", sum(rows, "roth_401k")],
+    ["401K retirement", sum(rows, "roth_401k")],
     ["Dental insurance", sum(rows, "dental_insurance")],
+    ["Other deductions", sum(rows, "other_deductions")],
   ]
     .filter(([, value]) => value > 0)
     .sort((a, b) => b[1] - a[1]);

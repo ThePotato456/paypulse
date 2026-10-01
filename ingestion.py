@@ -46,6 +46,7 @@ CSV_FIELDS = [
     "roth_401k",
     "dental_insurance",
     "health_insurance",
+    "other_deductions",
 ]
 
 MONEY_FIELDS = {
@@ -65,6 +66,7 @@ MONEY_FIELDS = {
     "roth_401k",
     "dental_insurance",
     "health_insurance",
+    "other_deductions",
 }
 
 DECIMAL_FIELDS = set(CSV_FIELDS) - {
@@ -315,7 +317,7 @@ def parse_statement_text(
     medicare_tax = _current_component(summary_text, "MED EE")
     federal_withholding = _current_component(summary_text, "FEDERAL WH")
     mississippi_withholding = _current_component(summary_text, "MISSISSIPPI WH")
-    roth_401k = _current_component(summary_text, "Roth 401K")
+    roth_401k = _current_component(summary_text, "Roth 401K", "401K")
     dental_insurance = _current_component(summary_text, "Dental Ins", "Dental Insurance")
     health_insurance = _current_component(summary_text, "Health Ins", "Health Insurance")
 
@@ -325,7 +327,20 @@ def parse_statement_text(
         + federal_withholding
         + mississippi_withholding
     )
-    total_deductions = _money(roth_401k + dental_insurance + health_insurance)
+    categorized_deductions = _money(
+        roth_401k + dental_insurance + health_insurance
+    )
+    unclassified_deductions = _money(reported_deductions - categorized_deductions)
+    # Payroll providers can introduce deduction labels without notice. Preserve
+    # known categories, and place a positive remainder from the statement's
+    # authoritative total in Other rather than rejecting an otherwise balanced
+    # stub. A negative remainder still fails reconciliation below.
+    if unclassified_deductions >= -TOLERANCE:
+        other_deductions = max(Decimal("0.00"), unclassified_deductions)
+        total_deductions = reported_deductions
+    else:
+        other_deductions = Decimal("0.00")
+        total_deductions = categorized_deductions
     calculated_net = _money(gross_pay - total_taxes - total_deductions)
     paid_detail_gross = _money(regular_pay + overtime_pay + bonus_pay)
     calculated_hours = regular_hours + overtime_hours
@@ -387,6 +402,7 @@ def parse_statement_text(
         "roth_401k": roth_401k,
         "dental_insurance": dental_insurance,
         "health_insurance": health_insurance,
+        "other_deductions": other_deductions,
     }
     checks = {
         "status": "OK",
@@ -462,7 +478,8 @@ def append_statements(
     if path.exists():
         with path.open("r", encoding="utf-8-sig", newline="") as stream:
             reader = csv.DictReader(stream)
-            if reader.fieldnames != CSV_FIELDS:
+            legacy_fields = [field for field in CSV_FIELDS if field != "other_deductions"]
+            if reader.fieldnames not in (CSV_FIELDS, legacy_fields):
                 raise IngestionError(
                     "The pay-history CSV schema does not match the ingestion schema."
                 )

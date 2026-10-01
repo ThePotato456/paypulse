@@ -45,6 +45,7 @@ class ManualIncomeTests(unittest.TestCase):
         self.assertEqual(record["hours_units"], 42.0)
         self.assertEqual(record["overtime_rate"], 30.0)
         self.assertEqual(record["total_taxes"], 150.0)
+        self.assertEqual(record["other_deductions"], 0.0)
         self.assertEqual(record["calculated_net"], 800.0)
 
     def test_manual_entry_rejects_unreconciled_amounts(self):

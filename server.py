@@ -202,6 +202,7 @@ def normalize_manual_income(payload: object) -> dict[str, object]:
         "roth_401k": 0.0,
         "dental_insurance": 0.0,
         "health_insurance": total_deductions,
+        "other_deductions": 0.0,
         "income_type": income_type,
         "income_frequency": income_frequency,
     }
