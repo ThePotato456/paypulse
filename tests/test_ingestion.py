@@ -149,6 +149,30 @@ class IngestionTests(unittest.TestCase):
         self.assertEqual(statement.checks["gross_difference"], 0.0)
         self.assertEqual(statement.checks["hours_difference"], 0.0)
 
+    def test_tipped_overtime_role_code_is_paid_earnings(self):
+        summary = (
+            TIPPED_SUMMARY_TEXT
+            .replace("$228.41 $200.55", "$229.01 $201.15")
+            .replace(
+                "Total: 33.57 364.17",
+                "Tip OT-DR 8.6250 0.07 0.60 0.07 0.60\nTotal: 33.64 364.77",
+            )
+        )
+        detail = (
+            TIPPED_DETAIL_TEXT
+            .replace(
+                "33.57 228.41",
+                "Tip OT-DR 8.6250 0.07 0.60 1 05 Driver\n33.64 229.01",
+            )
+        )
+
+        statement = parse_statement_text(summary, detail)
+
+        self.assertEqual(float(statement.record["overtime_hours"]), 0.07)
+        self.assertEqual(float(statement.record["overtime_pay"]), 0.60)
+        self.assertEqual(statement.checks["gross_difference"], 0.0)
+        self.assertEqual(statement.checks["hours_difference"], 0.0)
+
     def test_flat_other_earning_reconciles_without_counting_it_as_hours(self):
         statement = parse_statement_text(
             OTHER_EARNING_SUMMARY_TEXT, OTHER_EARNING_DETAIL_TEXT

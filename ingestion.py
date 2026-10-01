@@ -291,7 +291,10 @@ def parse_statement_text(
         ]
     )
     overtime_rate, overtime_hours, overtime_pay = _sum_earning_lines(
-        _earning_lines(detail_source, "Overtime")
+        [
+            *_earning_lines(detail_source, "Overtime"),
+            *_earning_lines(detail_source, "Tip OT"),
+        ]
     )
     bonus_pay = (
         _bonus_from_detail(detail_text)
